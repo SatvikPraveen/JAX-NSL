@@ -1,9 +1,17 @@
 # JAX-NSL: Neural Scientific Learning with JAX
 
-[![CI](https://github.com/SatvikPraveen/JAX-NSL/actions/workflows/ci.yml/badge.svg)](https://github.com/SatvikPraveen/JAX-NSL/actions/workflows/ci.yml)
-[![Documentation Status](https://github.com/SatvikPraveen/JAX-NSL/actions/workflows/docs.yml/badge.svg)](https://github.com/SatvikPraveen/JAX-NSL/actions/workflows/docs.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
+[![JAX](https://img.shields.io/badge/JAX-0.4.0+-orange.svg)](https://github.com/google/jax)
+[![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
+[![Imports: isort](https://img.shields.io/badge/%20imports-isort-%231674b1?style=flat&labelColor=ef8336)](https://pycqa.github.io/isort/)
+[![Type checked: mypy](https://img.shields.io/badge/type%20checked-mypy-blue.svg)](https://github.com/python/mypy)
+[![GPU](https://img.shields.io/badge/GPU-CUDA%2011.0+-green.svg)](https://developer.nvidia.com/cuda-toolkit)
+[![TPU](https://img.shields.io/badge/TPU-Compatible-red.svg)](https://cloud.google.com/tpu)
+[![Docker](https://img.shields.io/badge/Docker-Supported-blue.svg)](https://www.docker.com/)
+[![Jupyter](https://img.shields.io/badge/Jupyter-21%20Notebooks-orange.svg)](https://jupyter.org/)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](http://makeapullrequest.com)
+[![Made with ❤️](https://img.shields.io/badge/Made%20with-❤️-red.svg)](https://github.com/SatvikPraveen/JAX-NSL)
 
 A comprehensive implementation of neural network architectures and scientific computing techniques using JAX, focusing on scalability, numerical stability, and advanced research applications.
 
