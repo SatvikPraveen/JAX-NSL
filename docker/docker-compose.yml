@@ -1,0 +1,46 @@
+# File location: docker/docker-compose.yml
+
+version: "3.8"
+
+services:
+  jax-nsl:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    volumes:
+      - ../notebooks:/app/notebooks
+      - ../data:/app/data
+      - ../src:/app/src
+    ports:
+      - "8888:8888"
+    environment:
+      - JUPYTER_ENABLE_LAB=yes
+      - PYTHONPATH=/app/src
+    command: >
+      bash -c "
+        pip install jupyter jupyterlab &&
+        jupyter lab --ip=0.0.0.0 --port=8888 --no-browser --allow-root --NotebookApp.token=''
+      "
+
+  jax-nsl-cpu:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    volumes:
+      - ../:/app
+    environment:
+      - JAX_PLATFORM_NAME=cpu
+      - PYTHONPATH=/app/src
+    command: python -c "import jax; print('JAX platform:', jax.default_backend())"
+
+  jax-nsl-dev:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    volumes:
+      - ../:/app
+    environment:
+      - PYTHONPATH=/app/src
+    stdin_open: true
+    tty: true
+    command: /bin/bash
