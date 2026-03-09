@@ -219,3 +219,19 @@ def pad_to_shape(x: jnp.ndarray, target_shape: Tuple[int, ...],
         pad_widths.append((0, pad_width))
     
     return jnp.pad(x, pad_widths, mode=mode, constant_values=constant_values)
+
+
+# ---------------------------------------------------------------------------
+# Additional utilities
+# ---------------------------------------------------------------------------
+
+def check_finite(x: jnp.ndarray) -> bool:
+    """Return True if all elements of *x* are finite (no NaN or Inf).
+
+    Args:
+        x: Input array.
+
+    Returns:
+        bool \u2014 True iff every element is finite.
+    """
+    return bool(jnp.all(jnp.isfinite(x)))

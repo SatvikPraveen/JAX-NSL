@@ -393,6 +393,14 @@ def estimate_memory_per_device(params: Any,
     
     jax.tree_util.tree_map_with_path(count_params, params)
     
+
+# ---------------------------------------------------------------------------
+# Aliases
+# ---------------------------------------------------------------------------
+
+#: Alias: shard_array → create_sharded_array
+shard_array = create_sharded_array
+
     return {
         'total_params_mb': total_params / (1024 * 1024),
         'params_per_device_mb': sharded_params / (1024 * 1024),

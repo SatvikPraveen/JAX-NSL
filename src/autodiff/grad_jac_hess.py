@@ -323,3 +323,49 @@ def gradient_checker(fun: Callable,
     is_close = jnp.allclose(grad_analytical, grad_fd, rtol=rtol, atol=atol)
     
     return bool(is_close), float(max_error)
+
+
+# ---------------------------------------------------------------------------
+# Convenience wrappers (compute and return value directly)
+# ---------------------------------------------------------------------------
+
+def compute_gradient(fun: Callable, x: jnp.ndarray, argnums: int = 0) -> jnp.ndarray:
+    """Compute gradient of fun at x and return the value directly.
+
+    Args:
+        fun: Scalar-valued function
+        x: Input array
+        argnums: Argument index to differentiate
+
+    Returns:
+        Gradient array
+    """
+    return grad(fun, argnums=argnums)(x)
+
+
+def compute_jacobian(fun: Callable, x: jnp.ndarray, argnums: int = 0) -> jnp.ndarray:
+    """Compute Jacobian of fun at x and return the value directly.
+
+    Args:
+        fun: Vector-valued function
+        x: Input array
+        argnums: Argument index to differentiate
+
+    Returns:
+        Jacobian array
+    """
+    return jacobian(fun, argnums=argnums)(x)
+
+
+def compute_hessian(fun: Callable, x: jnp.ndarray, argnums: int = 0) -> jnp.ndarray:
+    """Compute Hessian of fun at x and return the value directly.
+
+    Args:
+        fun: Scalar-valued function
+        x: Input array
+        argnums: Argument index to differentiate
+
+    Returns:
+        Hessian array
+    """
+    return hessian(fun, argnums=argnums)(x)

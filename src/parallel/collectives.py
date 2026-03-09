@@ -360,3 +360,44 @@ def create_communication_group(devices: list,
         'axis_name': axis_name,
         'group_size': len(devices)
     }
+
+
+# ---------------------------------------------------------------------------
+# Additional utilities
+# ---------------------------------------------------------------------------
+
+def distributed_dot(x: jnp.ndarray, y: jnp.ndarray,
+                    axis_name: str = 'batch') -> jnp.ndarray:
+    """Distributed dot product across pmap replicas.
+
+    Computes the local dot product and sums across all replicas.
+
+    Args:
+        x: Local array on the current device.
+        y: Local array on the current device.
+        axis_name: Name of the pmap axis.
+
+    Returns:
+        Global dot product scalar.
+    """
+    local = jnp.dot(x.ravel(), y.ravel())
+    return lax.psum(local, axis_name=axis_name)
+
+
+def sync_batch_stats(batch_stats: Any,
+                     axis_name: str = 'batch') -> Any:
+    """Synchronise batch normalisation statistics across pmap replicas.
+
+    Averages *mean* and *var* leaves across devices so that batch-norm
+    running statistics stay consistent.
+
+    Args:
+        batch_stats: Pytree containing batch-norm statistics.
+        axis_name: Name of the pmap axis.
+
+    Returns:
+        Synchronised batch statistics pytree.
+    """
+    return jax.tree_util.tree_map(
+        lambda s: lax.pmean(s, axis_name=axis_name), batch_stats
+    )

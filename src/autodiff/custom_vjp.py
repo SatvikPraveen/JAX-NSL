@@ -276,3 +276,41 @@ def swish_vjp_bwd(res: Tuple, g: jnp.ndarray) -> Tuple[jnp.ndarray, None]:
 
 
 swish_vjp.defvjp(swish_vjp_fwd, swish_vjp_bwd)
+
+
+# ---------------------------------------------------------------------------
+# Aliases and additional functions for test compatibility
+# ---------------------------------------------------------------------------
+
+# Alias: custom_sqrt_vjp → custom_sqrt
+custom_sqrt_vjp = custom_sqrt
+
+
+@custom_vjp
+def smooth_abs_vjp(x: jnp.ndarray, eps: float = 1e-2) -> jnp.ndarray:
+    """Smooth absolute value with custom VJP.
+
+    Forward: sqrt(x^2 + eps^2)  — smooth approximation to |x|
+    Backward: x / sqrt(x^2 + eps^2)
+
+    Args:
+        x: Input tensor
+        eps: Smoothing parameter
+
+    Returns:
+        Smooth absolute value of x
+    """
+    return jnp.sqrt(x ** 2 + eps ** 2)
+
+
+def _smooth_abs_fwd(x: jnp.ndarray, eps: float) -> Tuple[jnp.ndarray, Tuple]:
+    y = jnp.sqrt(x ** 2 + eps ** 2)
+    return y, (x, eps, y)
+
+
+def _smooth_abs_bwd(res: Tuple, g: jnp.ndarray) -> Tuple[jnp.ndarray, None]:
+    x, eps, y = res
+    return g * x / y, None
+
+
+smooth_abs_vjp.defvjp(_smooth_abs_fwd, _smooth_abs_bwd)

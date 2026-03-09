@@ -288,3 +288,65 @@ def warmup_jit(fun: Callable, example_inputs: Tuple[Any, ...],
             result.block_until_ready()
     
     return compiled_fun
+
+
+# ---------------------------------------------------------------------------
+# Aliases and convenience wrappers
+# ---------------------------------------------------------------------------
+
+def jit_with_static(fun: Callable,
+                    static_argnums: Union[int, Tuple[int, ...]] = ()) -> Callable:
+    """JIT-compile *fun* treating *static_argnums* as compile-time constants.
+
+    Thin convenience wrapper around :func:`jax.jit`.
+
+    Args:
+        fun: Function to compile.
+        static_argnums: Argument positions that are compile-time constants.
+
+    Returns:
+        JIT-compiled callable.
+    """
+    return jit(fun, static_argnums=static_argnums)
+
+
+#: Alias: efficient_jit → smart_jit
+efficient_jit = smart_jit
+
+
+def benchmark_jit(fun: Callable, *args,
+                  warmup_runs: int = 3,
+                  benchmark_runs: int = 10) -> Tuple[float, float]:
+    """Benchmark a function: returns (warmup_time, mean_run_time) in seconds.
+
+    Args:
+        fun: Function to benchmark (will be JIT-compiled).
+        *args: Positional arguments to pass to *fun*.
+        warmup_runs: Number of warmup iterations.
+        benchmark_runs: Number of timed iterations.
+
+    Returns:
+        ``(warmup_time, mean_run_time)`` as floats in seconds.
+    """
+    import time
+
+    compiled = jit(fun)
+
+    # Warmup
+    t0 = time.perf_counter()
+    for _ in range(warmup_runs):
+        out = compiled(*args)
+        if hasattr(out, 'block_until_ready'):
+            out.block_until_ready()
+    warmup_time = (time.perf_counter() - t0) / max(warmup_runs, 1)
+
+    # Benchmark
+    times = []
+    for _ in range(benchmark_runs):
+        t1 = time.perf_counter()
+        out = compiled(*args)
+        if hasattr(out, 'block_until_ready'):
+            out.block_until_ready()
+        times.append(time.perf_counter() - t1)
+
+    return float(warmup_time), float(sum(times) / len(times))
