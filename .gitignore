@@ -114,6 +114,7 @@ cython_debug/
 
 # VSCode
 .vscode/
+!.vscode/settings.json
 
 # Mac
 .DS_Store

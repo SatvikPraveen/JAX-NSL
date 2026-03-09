@@ -10,7 +10,7 @@ learning rate schedules and parameter update rules.
 import jax
 import jax.numpy as jnp
 from jax import tree_util
-from typing import NamedTuple, Callable, Any, Optional, Dict, Union
+from typing import NamedTuple, Callable, Any, Optional, Dict, Union, Tuple
 import math
 
 
@@ -47,7 +47,7 @@ class AdaGradState(OptimizerState):
 
 
 def sgd_optimizer(learning_rate: float,
-                 weight_decay: float = 0.0) -> Callable:
+                 weight_decay: float = 0.0) -> Tuple[Callable, Callable]:
     """SGD optimizer with optional weight decay.
     
     Args:
@@ -84,7 +84,7 @@ def sgd_optimizer(learning_rate: float,
 def momentum_optimizer(learning_rate: float,
                       momentum: float = 0.9,
                       weight_decay: float = 0.0,
-                      nesterov: bool = False) -> Callable:
+                      nesterov: bool = False) -> Tuple[Callable, Callable]:
     """SGD with momentum optimizer.
     
     Args:
@@ -140,7 +140,7 @@ def adam_optimizer(learning_rate: float = 0.001,
                   beta1: float = 0.9,
                   beta2: float = 0.999,
                   eps: float = 1e-8,
-                  weight_decay: float = 0.0) -> Callable:
+                  weight_decay: float = 0.0) -> Tuple[Callable, Callable]:
     """Adam optimizer.
     
     Args:
@@ -209,7 +209,7 @@ def adamw_optimizer(learning_rate: float = 0.001,
                    beta1: float = 0.9,
                    beta2: float = 0.999,
                    eps: float = 1e-8,
-                   weight_decay: float = 0.01) -> Callable:
+                   weight_decay: float = 0.01) -> Tuple[Callable, Callable]:
     """AdamW optimizer with decoupled weight decay.
     
     Args:
@@ -315,7 +315,7 @@ def rmsprop_optimizer(learning_rate: float = 0.01,
 
 def adagrad_optimizer(learning_rate: float = 0.01,
                      eps: float = 1e-8,
-                     weight_decay: float = 0.0) -> Callable:
+                     weight_decay: float = 0.0) -> Tuple[Callable, Callable]:
     """AdaGrad optimizer.
     
     Args:

@@ -9,7 +9,8 @@ operations that are prone to overflow, underflow, or precision issues.
 
 import jax
 import jax.numpy as jnp
-from typing import Optional, Union, Tuple, Any, Callable
+from typing import Optional, Union, Tuple, Any, Callable, overload
+from typing import Literal
 import math
 
 
@@ -41,7 +42,19 @@ def safe_exp(x: jnp.ndarray, max_val: Optional[float] = None) -> jnp.ndarray:
     return jnp.exp(jnp.minimum(x, max_val))
 
 
-def logsumexp_stable(x: jnp.ndarray, 
+@overload
+def logsumexp_stable(x: jnp.ndarray,
+                    axis: Optional[Union[int, Tuple[int, ...]]] = ...,
+                    keepdims: bool = ...,
+                    return_max: Literal[False] = ...) -> jnp.ndarray: ...
+
+@overload
+def logsumexp_stable(x: jnp.ndarray,
+                    axis: Optional[Union[int, Tuple[int, ...]]] = ...,
+                    keepdims: bool = ...,
+                    return_max: Literal[True] = ...) -> Tuple[jnp.ndarray, jnp.ndarray]: ...
+
+def logsumexp_stable(x: jnp.ndarray,
                     axis: Optional[Union[int, Tuple[int, ...]]] = None,
                     keepdims: bool = False,
                     return_max: bool = False) -> Union[jnp.ndarray, Tuple[jnp.ndarray, jnp.ndarray]]:
