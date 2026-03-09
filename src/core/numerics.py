@@ -9,7 +9,7 @@ operations that are prone to overflow, underflow, or precision issues.
 
 import jax
 import jax.numpy as jnp
-from typing import Optional, Union, Tuple, Any
+from typing import Optional, Union, Tuple, Any, Callable
 import math
 
 
@@ -288,3 +288,57 @@ def gumbel_softmax(logits: jnp.ndarray,
         y = y_hard - jax.lax.stop_gradient(y) + y
     
     return y
+
+
+# ---------------------------------------------------------------------------
+# Aliases for test / notebook compatibility
+# ---------------------------------------------------------------------------
+
+#: Alias for :func:`logsumexp_stable`
+stable_logsumexp = logsumexp_stable
+
+#: Alias for :func:`softmax_stable`
+stable_softmax = softmax_stable
+
+
+def safe_sqrt(x: jnp.ndarray, eps: float = 0.0) -> jnp.ndarray:
+    """Numerically safe square root.
+
+    Clamps negative values to *eps* before taking the root so gradients
+    remain finite everywhere.
+
+    Args:
+        x: Input array.
+        eps: Floor for values before sqrt (default 0 — clamp to 0).
+
+    Returns:
+        Element-wise sqrt of max(x, eps).
+    """
+    return jnp.sqrt(jnp.maximum(x, eps))
+
+
+def numerical_gradient(fun: Callable, x: jnp.ndarray,
+                       h: float = 1e-5) -> jnp.ndarray:
+    """Finite-difference gradient estimate (central differences).
+
+    Convenience wrapper around the full
+    :func:`~jax_nsl.autodiff.grad_jac_hess.finite_diff_grad` for simple
+    single-argument scalar functions.
+
+    Args:
+        fun: Scalar-valued function of a single array argument.
+        x: Point at which to evaluate the gradient.
+        h: Step size.
+
+    Returns:
+        Gradient array with the same shape as *x*.
+    """
+    flat = x.ravel()
+    n = flat.size
+
+    def partial(i):
+        ei = jnp.zeros(n).at[i].set(h)
+        return (fun((flat + ei).reshape(x.shape)) -
+                fun((flat - ei).reshape(x.shape))) / (2 * h)
+
+    return jax.vmap(partial)(jnp.arange(n)).reshape(x.shape)

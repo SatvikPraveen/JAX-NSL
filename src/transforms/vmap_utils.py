@@ -323,3 +323,27 @@ def vmap_with_signature(signature: str) -> Callable:
         return vmap(fun, in_axes=tuple(in_axes), out_axes=out_axes)
     
     return decorator
+
+
+# ---------------------------------------------------------------------------
+# Aliases and convenience wrappers
+# ---------------------------------------------------------------------------
+
+def batched_matmul(A: jnp.ndarray, B: jnp.ndarray) -> jnp.ndarray:
+    """Batched matrix multiplication via :func:`jax.vmap`.
+
+    Args:
+        A: Array of shape ``(batch, m, k)``.
+        B: Array of shape ``(batch, k, n)``.
+
+    Returns:
+        Array of shape ``(batch, m, n)``.
+    """
+    return vmap(jnp.matmul)(A, B)
+
+
+#: Alias: batched_gradient → batch_gradient
+batched_gradient = batch_gradient
+
+#: Alias: parallel_apply → batch_apply
+parallel_apply = batch_apply

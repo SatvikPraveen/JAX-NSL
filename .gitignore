@@ -151,3 +151,17 @@ docs/build/
 
 # Profiling
 *.prof
+*.lprof
+
+# Virtual environments (project-local)
+venv/
+.venv/
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
+
+# pytest cache
+.pytest_cache/
+
+# mypy cache
+.mypy_cache/

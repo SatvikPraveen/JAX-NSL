@@ -376,3 +376,26 @@ def scan_with_checkpointing(fun: Callable,
         outputs = outputs[:seq_len]
     
     return final_carry, outputs
+
+
+# ---------------------------------------------------------------------------
+# Aliases
+# ---------------------------------------------------------------------------
+
+def cumulative_sum(xs: jnp.ndarray, axis: int = 0) -> jnp.ndarray:
+    """Compute cumulative sum of *xs* along *axis* using scan.
+
+    Convenience wrapper around :func:`cumulative_op`.
+
+    Args:
+        xs: Input array.
+        axis: Axis along which to accumulate.
+
+    Returns:
+        Cumulative sums with the same shape as *xs*.
+    """
+    return cumulative_op(lambda a, b: a + b, xs, axis=axis)
+
+
+#: Alias: solve_ode → ode_solve_scan
+solve_ode = ode_solve_scan

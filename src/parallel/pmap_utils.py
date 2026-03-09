@@ -350,3 +350,25 @@ def estimate_memory_usage(params: Any, batch_size: int, num_devices: int = None)
         'per_device_batch_size': per_device_batch_size,
         'num_devices': num_devices
     }
+
+
+# ---------------------------------------------------------------------------
+# Additional utilities
+# ---------------------------------------------------------------------------
+
+def sync_gradients(gradients: Any, axis_name: str = 'batch') -> Any:
+    """Synchronise (average) gradients across all pmap devices.
+
+    Should be called inside a ``pmap``’d function.  Wraps
+    :func:`jax.lax.pmean` over an entire gradient pytree.
+
+    Args:
+        gradients: Pytree of per-device gradient arrays.
+        axis_name: Name of the pmap axis.
+
+    Returns:
+        Pytree with all leaves replaced by the cross-replica mean.
+    """
+    return jax.tree_util.tree_map(
+        lambda g: lax.pmean(g, axis_name=axis_name), gradients
+    )

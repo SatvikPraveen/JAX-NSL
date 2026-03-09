@@ -241,6 +241,33 @@ def learnable_activation_jvp(x: jnp.ndarray, params: jnp.ndarray) -> jnp.ndarray
     return result
 
 
+# smooth_abs_jvp — smooth absolute value with custom JVP
+@custom_jvp
+def smooth_abs_jvp(x: jnp.ndarray, eps: float = 1e-2) -> jnp.ndarray:
+    """Smooth absolute value with custom JVP.
+
+    Forward: sqrt(x^2 + eps^2)
+    JVP: x / sqrt(x^2 + eps^2) * dx
+
+    Args:
+        x: Input tensor
+        eps: Smoothing parameter
+
+    Returns:
+        Smooth absolute value of x
+    """
+    return jnp.sqrt(x ** 2 + eps ** 2)
+
+
+@smooth_abs_jvp.defjvp
+def _smooth_abs_jvp_rule(primals, tangents):
+    x, eps = primals
+    dx, _ = tangents
+    y = jnp.sqrt(x ** 2 + eps ** 2)
+    dy = x / y * dx
+    return y, dy
+
+
 @learnable_activation_jvp.defjvp
 def learnable_activation_jvp_jvp(primals, tangents):
     """JVP rule for learnable polynomial activation."""

@@ -340,3 +340,50 @@ def scatter_add_nd(operand: jnp.ndarray,
             scatter_dims_to_operand_dims=(0,)
         )
     )
+
+
+# ---------------------------------------------------------------------------
+# Re-exports from core for convenience
+# ---------------------------------------------------------------------------
+
+from core.numerics import safe_divide, softmax_stable as stable_softmax  # noqa: E402
+
+
+def clip_gradient(x: jnp.ndarray,
+                  min_val: float = -1.0,
+                  max_val: float = 1.0) -> jnp.ndarray:
+    """Element-wise gradient clipping with straight-through forward pass.
+
+    Forward: returns *x* unchanged.
+    Backward: clips the incoming gradient to [*min_val*, *max_val*].
+
+    Args:
+        x: Input array.
+        min_val: Lower gradient clip bound.
+        max_val: Upper gradient clip bound.
+
+    Returns:
+        *x* (forward pass is identity).
+    """
+    from autodiff.custom_vjp import clip_gradient_vjp
+    return clip_gradient_vjp(x, min_val=min_val, max_val=max_val)
+
+    """Element-wise gradient clipping with straight-through forward pass.
+
+    Forward: returns *x* unchanged.
+    Backward: clips the incoming gradient to [*min_val*, *max_val*].
+
+    This is a thin wrapper around
+    :func:`~jax_nsl.autodiff.custom_vjp.clip_gradient_vjp` for users who
+    prefer to import from the ``transforms.control_flow`` namespace.
+
+    Args:
+        x: Input array.
+        min_val: Lower gradient clip bound.
+        max_val: Upper gradient clip bound.
+
+    Returns:
+        *x* (forward pass is identity).
+    """
+    from jax_nsl.autodiff.custom_vjp import clip_gradient_vjp
+    return clip_gradient_vjp(x, min_val=min_val, max_val=max_val)
