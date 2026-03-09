@@ -90,7 +90,7 @@ class TestCNN:
 
     def test_pooling_reduces_spatial(self):
         x = jnp.ones((2, 8, 8, 4))
-        out = pooling_layer(x, pool_type="max", window_shape=(2, 2), strides=(2, 2))
+        out = pooling_layer(x, pool_type="max", window_shape=(2, 2), stride=(2, 2))
         assert out.shape == (2, 4, 4, 4)
 
 
@@ -123,7 +123,7 @@ class TestTransformer:
             "scale": jnp.ones(8),
             "bias": jnp.zeros(8),
         }
-        out = layer_norm(x, params)
+        out = layer_norm(x, params["scale"], params["bias"])
         assert out.shape == x.shape
         # Normalised rows should have near-zero mean and unit std
         assert jnp.allclose(out.mean(axis=-1), jnp.zeros(4), atol=1e-4)

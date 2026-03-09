@@ -127,10 +127,9 @@ def stable_eigh(matrix: jnp.ndarray,
         raise e
 
 
-def qr_decomposition(matrix: jnp.ndarray, 
+def qr_decomposition(matrix: jnp.ndarray,
                     mode: str = 'reduced',
-                    pivoting: bool = False) -> Union[Tuple[jnp.ndarray, jnp.ndarray], 
-                                                   Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]]:
+                    pivoting: bool = False) -> Tuple[jnp.ndarray, jnp.ndarray]:
     """QR decomposition with optional pivoting.
     
     Args:

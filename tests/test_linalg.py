@@ -103,7 +103,7 @@ class TestSolvers:
         # Ax = b where A = diag(1,2,3,4)
         A = jnp.diag(jnp.array([1.0, 2.0, 3.0, 4.0]))
         b = jnp.array([1.0, 2.0, 3.0, 4.0])
-        x, info = conjugate_gradient(A, b, tol=1e-6, max_iter=50)
+        x, info = conjugate_gradient(A, b, tolerance=1e-6, max_iterations=50)
         assert jnp.allclose(A @ x, b, atol=1e-4)
 
     def test_gradient_descent_minimises_quadratic(self):
@@ -111,11 +111,11 @@ class TestSolvers:
             return jnp.sum((x - 3.0) ** 2)
 
         x0 = jnp.zeros(3)
-        result, _ = gradient_descent(f, x0, learning_rate=0.1, max_iter=200)
+        result, _ = gradient_descent(f, x0, learning_rate=0.1, max_iterations=200)
         assert jnp.allclose(result, jnp.full(3, 3.0), atol=0.05)
 
     def test_eigenvalue_power_method(self):
         # Largest eigenvalue of diag(5, 3, 1) should be 5
         A = jnp.diag(jnp.array([5.0, 3.0, 1.0]))
-        eigenvalue, _ = eigenvalue_power_method(A, max_iter=100)
+        eigenvalue, _ = eigenvalue_power_method(A, max_iterations=100)
         assert jnp.allclose(eigenvalue, 5.0, atol=0.1)

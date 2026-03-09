@@ -1,0 +1,24 @@
+{
+  "pythonVersion": "3.11",
+  "venvPath": ".",
+  "venv": "venv",
+  "extraPaths": [
+    "src"
+  ],
+  "include": [
+    "src",
+    "tests",
+    "notebooks"
+  ],
+  "exclude": [
+    "venv",
+    "build",
+    "dist",
+    ".git",
+    "**/node_modules",
+    "**/__pycache__",
+    "**/.*"
+  ],
+  "reportMissingImports": "warning",
+  "reportMissingModuleSource": "none"
+}
