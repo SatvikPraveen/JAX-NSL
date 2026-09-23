@@ -1,402 +1,272 @@
 # tests/test_parallel.py
+"""Tests for jax_nsl.parallel on 8 virtual CPU devices (see conftest.py)."""
 
 import jax
 import jax.numpy as jnp
 import pytest
-from jax import random, pmap, jit
-from jax.sharding import PartitionSpec, Mesh
-from jax.experimental import mesh_utils
-import numpy as np
+from jax import pmap, random
+from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
 
-from jax_nsl.parallel.pmap_utils import data_parallel_step, sync_gradients, replicate_params
-from jax_nsl.parallel.pjit_utils import create_mesh, shard_array, partition_params
-from jax_nsl.parallel.collectives import all_reduce_mean, distributed_dot, sync_batch_stats
+from jax_nsl.models.mlp import create_mlp
+from jax_nsl.parallel.collectives import (
+    all_gather,
+    all_reduce_mean,
+    alltoall,
+    broadcast,
+    compute_communication_volume,
+    distributed_dot,
+    gradient_synchronization,
+    reduce_scatter,
+    ring_all_reduce,
+    sync_batch_stats,
+    tree_all_reduce,
+)
+from jax_nsl.parallel.pjit_utils import (
+    check_sharding_compatibility,
+    create_mesh,
+    create_transformer_partition_specs,
+    estimate_memory_per_device,
+    fsdp_rules,
+    make_sharded_train_step,
+    partition_params,
+    partition_specs,
+    setup_model_parallelism,
+    shard_array,
+    sharded_matmul_row_parallel,
+    sharded_matmul_shard_map,
+    sharding_summary,
+)
+from jax_nsl.parallel.pmap_utils import (
+    create_parallel_inference_fn,
+    create_pmap_train_step,
+    data_parallel_step,
+    replicate_params,
+    shard_batch,
+    sync_gradients,
+    unreplicate_params,
+)
+from jax_nsl.training.losses import cross_entropy_loss
+from jax_nsl.training.optimizers import sgd_optimizer
+
+N = jax.device_count()
+multi = pytest.mark.skipif(N < 2, reason="needs >= 2 devices (set XLA_FLAGS, see conftest)")
 
 
+class TestDeviceSetup:
+    def test_virtual_devices_present(self):
+        assert N == 8, "conftest should expose 8 virtual CPU devices"
+
+
+@multi
 class TestPmapUtils:
-    """Test pmap (data parallel) utilities."""
-    
-    def test_replicate_params(self):
-        """Test parameter replication across devices."""
-        # Skip if not enough devices
-        n_devices = jax.device_count()
-        if n_devices < 2:
-            pytest.skip("Need at least 2 devices for pmap tests")
-        
-        params = {
-            'W': jnp.array([[1.0, 2.0], [3.0, 4.0]]),
-            'b': jnp.array([0.5, 1.5])
-        }
-        
-        replicated = replicate_params(params)
-        
-        # Check that parameters are replicated
-        assert replicated['W'].shape == (n_devices, 2, 2)
-        assert replicated['b'].shape == (n_devices, 2)
-        
-        # All replicas should be identical
-        for i in range(n_devices):
-            assert jnp.allclose(replicated['W'][i], params['W'])
-            assert jnp.allclose(replicated['b'][i], params['b'])
-    
+    def test_replicate_and_unreplicate(self):
+        params = {"W": jnp.array([[1.0, 2.0], [3.0, 4.0]]), "b": jnp.array([0.5, 1.5])}
+        rep = replicate_params(params)
+        assert rep["W"].shape == (N, 2, 2)
+        assert len(rep["W"].sharding.device_set) == N
+        assert jnp.allclose(unreplicate_params(rep)["W"], params["W"])
+
+    def test_shard_batch(self):
+        batch = {"x": jnp.ones((16, 3)), "y": jnp.ones(16)}
+        sharded = shard_batch(batch)
+        assert sharded["x"].shape == (N, 16 // N, 3)
+        with pytest.raises(ValueError):
+            shard_batch({"x": jnp.ones((N + 1, 3))})
+
     def test_sync_gradients(self):
-        """Test gradient synchronization across devices."""
-        n_devices = jax.device_count()
-        if n_devices < 2:
-            pytest.skip("Need at least 2 devices for pmap tests")
-        
-        # Create different gradients per device
-        grad_shape = (n_devices, 3)
-        gradients = jnp.arange(n_devices * 3).reshape(grad_shape)
-        
-        synced_grads = sync_gradients(gradients)
-        
-        # All devices should have the same (averaged) gradients
-        expected_grad = jnp.mean(gradients, axis=0)
-        for i in range(n_devices):
-            assert jnp.allclose(synced_grads[i], expected_grad)
-    
-    def test_data_parallel_step(self):
-        """Test data parallel training step."""
-        n_devices = jax.device_count()
-        if n_devices < 2:
-            pytest.skip("Need at least 2 devices for pmap tests")
-        
+        grads = jnp.arange(N * 3, dtype=jnp.float32).reshape(N, 3)
+        synced = pmap(sync_gradients, axis_name="batch")(grads)
+        for i in range(N):
+            assert jnp.allclose(synced[i], jnp.mean(grads, axis=0))
+
+    def test_data_parallel_step_keeps_replicas_in_sync(self):
         def loss_fn(params, batch):
-            return jnp.mean((params['W'] @ batch['x'] - batch['y'])**2)
-        
-        # Initialize parameters and optimizer state
+            return jnp.mean((batch["x"] @ params["W"] - batch["y"]) ** 2)
+
         key = random.PRNGKey(0)
-        params = {
-            'W': random.normal(key, (2, 3))
-        }
-        
-        # Create batched data (one batch per device)
-        batch_size_per_device = 4
-        key1, key2 = random.split(key)
-        
-        x_batch = random.normal(key1, (n_devices, batch_size_per_device, 3))
-        y_batch = random.normal(key2, (n_devices, batch_size_per_device, 2))
-        
-        batch = {'x': x_batch, 'y': y_batch}
-        
-        # Replicate parameters
-        replicated_params = replicate_params(params)
-        
-        # Perform data parallel step
-        new_params, loss = data_parallel_step(loss_fn, replicated_params, batch, lr=0.01)
-        
-        # Check shapes
-        assert new_params['W'].shape == (n_devices, 2, 3)
-        assert loss.shape == (n_devices,)
-        
-        # Parameters should be synchronized across devices
-        for i in range(1, n_devices):
-            assert jnp.allclose(new_params['W'][0], new_params['W'][i], rtol=1e-5)
+        params = {"W": random.normal(key, (3, 2))}
+        batch = {"x": random.normal(key, (N, 4, 3)), "y": random.normal(key, (N, 4, 2))}
+        new_params, loss = data_parallel_step(loss_fn, replicate_params(params), batch, lr=0.01)
+        assert new_params["W"].shape == (N, 3, 2) and loss.shape == (N,)
+        for i in range(1, N):
+            assert jnp.allclose(new_params["W"][0], new_params["W"][i], atol=1e-6)
+        # Equivalent to a single-device step on the concatenated batch.
+        full = {"x": batch["x"].reshape(-1, 3), "y": batch["y"].reshape(-1, 2)}
+        g = jax.grad(loss_fn)(params, full)
+        assert jnp.allclose(new_params["W"][0], params["W"] - 0.01 * g["W"], atol=1e-5)
+
+    def test_pmap_train_step_and_inference(self):
+        params, forward_fn, _ = create_mlp([4, 8, 3], seed=0)
+        init, update = sgd_optimizer(0.1)
+        step = create_pmap_train_step(forward_fn, cross_entropy_loss, update)
+        state = replicate_params(init(params))
+        batch = shard_batch({"inputs": random.normal(random.PRNGKey(0), (16, 4)),
+                             "labels": random.randint(random.PRNGKey(1), (16,), 0, 3)})
+        state, metrics = step(state, batch)
+        assert metrics["loss"].shape == (N,)
+        assert int(unreplicate_params(state).step) == 1
+        infer = create_parallel_inference_fn(forward_fn)
+        out = infer(unreplicate_params(state).params, jnp.ones((13, 4)))  # ragged -> padded
+        assert out.shape == (13, 3)
 
 
-class TestPjitUtils:
-    """Test pjit (model parallel) utilities."""
-    
-    def test_create_mesh(self):
-        """Test mesh creation for model parallelism."""
-        n_devices = jax.device_count()
-        if n_devices < 2:
-            pytest.skip("Need at least 2 devices for pjit tests")
-        
-        # Try to create a 1D mesh
-        mesh_shape = (n_devices,)
-        axis_names = ('batch',)
-        
-        mesh = create_mesh(mesh_shape, axis_names)
-        
-        assert isinstance(mesh, Mesh)
-        assert mesh.shape == {'batch': n_devices}
-    
-    def test_shard_array(self):
-        """Test array sharding across devices."""
-        n_devices = jax.device_count()
-        if n_devices < 2:
-            pytest.skip("Need at least 2 devices for pjit tests")
-        
-        # Create array and partition spec
-        array = jnp.ones((8, 4))  # Shape divisible by device count
-        partition_spec = PartitionSpec('batch', None)
-        
-        mesh_shape = (min(n_devices, 2),)  # Use at most 2 devices for simplicity
-        mesh = create_mesh(mesh_shape, ('batch',))
-        
-        with mesh:
-            sharded = shard_array(array, partition_spec)
-            
-            # Check that array is properly sharded
-            assert sharded.shape == (8, 4)
-    
-    def test_partition_params(self):
-        """Test parameter partitioning."""
-        n_devices = jax.device_count()
-        if n_devices < 2:
-            pytest.skip("Need at least 2 devices for pjit tests")
-        
-        params = {
-            'embeddings': jnp.ones((1000, 128)),  # Partition along vocab dimension
-            'dense': jnp.ones((128, 256)),        # Partition along output dimension
-            'bias': jnp.ones((256,))              # Replicated
-        }
-        
-        partition_specs = {
-            'embeddings': PartitionSpec('vocab', None),
-            'dense': PartitionSpec(None, 'hidden'),
-            'bias': PartitionSpec(None)
-        }
-        
-        mesh_shape = (min(n_devices, 2),)
-        mesh = create_mesh(mesh_shape, ('vocab',))
-        
-        with mesh:
-            partitioned = partition_params(params, partition_specs)
-            
-            # Check that parameters are properly shaped
-            assert partitioned['embeddings'].shape == (1000, 128)
-            assert partitioned['dense'].shape == (128, 256)
-            assert partitioned['bias'].shape == (256,)
-
-
+@multi
 class TestCollectives:
-    """Test collective communication operations."""
-    
     def test_all_reduce_mean(self):
-        """Test all-reduce mean operation."""
-        n_devices = jax.device_count()
-        if n_devices < 2:
-            pytest.skip("Need at least 2 devices for collective tests")
-        
-        # Create different values per device
-        values = jnp.arange(n_devices, dtype=jnp.float32)
-        
-        # Simulate pmap context
-        @pmap
-        def test_reduce(x):
-            return all_reduce_mean(x)
-        
-        result = test_reduce(values)
-        expected = jnp.mean(values)
-        
-        # All devices should have the mean value
-        for i in range(n_devices):
-            assert jnp.allclose(result[i], expected)
-    
+        values = jnp.arange(N, dtype=jnp.float32)
+        out = pmap(all_reduce_mean, axis_name="batch")(values)
+        assert jnp.allclose(out, jnp.mean(values))
+
     def test_distributed_dot(self):
-        """Test distributed dot product."""
-        n_devices = jax.device_count()
-        if n_devices < 2:
-            pytest.skip("Need at least 2 devices for collective tests")
-        
-        # Create vectors distributed across devices
-        dim = 8
-        x = random.normal(random.PRNGKey(0), (n_devices, dim // n_devices))
-        y = random.normal(random.PRNGKey(1), (n_devices, dim // n_devices))
-        
-        @pmap
-        def test_distributed_dot(x_shard, y_shard):
-            return distributed_dot(x_shard, y_shard)
-        
-        result = test_distributed_dot(x, y)
-        
-        # Compute expected result
-        x_full = x.reshape(-1)
-        y_full = y.reshape(-1)
-        expected = jnp.dot(x_full, y_full)
-        
-        # All devices should have the same result
-        for i in range(n_devices):
-            assert jnp.allclose(result[i], expected, rtol=1e-5)
-    
-    def test_sync_batch_stats(self):
-        """Test batch statistics synchronization."""
-        n_devices = jax.device_count()
-        if n_devices < 2:
-            pytest.skip("Need at least 2 devices for collective tests")
-        
-        # Create different batch stats per device
-        means = random.normal(random.PRNGKey(0), (n_devices, 3))
-        vars = random.uniform(random.PRNGKey(1), (n_devices, 3), minval=0.1, maxval=2.0)
-        
-        @pmap
-        def test_sync_stats(mean, var):
-            return sync_batch_stats(mean, var)
-        
-        synced_means, synced_vars = test_sync_stats(means, vars)
-        
-        # All devices should have synchronized stats
-        expected_mean = jnp.mean(means, axis=0)
-        expected_var = jnp.mean(vars, axis=0)
-        
-        for i in range(n_devices):
-            assert jnp.allclose(synced_means[i], expected_mean)
-            assert jnp.allclose(synced_vars[i], expected_var)
+        x = random.normal(random.PRNGKey(0), (N, 4))
+        y = random.normal(random.PRNGKey(1), (N, 4))
+        out = pmap(distributed_dot, axis_name="batch")(x, y)
+        assert jnp.allclose(out, jnp.vdot(x, y), rtol=1e-5)
+
+    def test_sync_batch_stats_pytree(self):
+        stats = {"mean": random.normal(random.PRNGKey(0), (N, 3)),
+                 "var": random.uniform(random.PRNGKey(1), (N, 3), minval=0.1, maxval=2.0)}
+        synced = pmap(sync_batch_stats, axis_name="batch")(stats)
+        assert jnp.allclose(synced["mean"][3], jnp.mean(stats["mean"], axis=0))
+
+    def test_tree_all_reduce_sum_and_max(self):
+        tree = {"a": jnp.arange(N, dtype=jnp.float32)}
+        s = pmap(lambda t: tree_all_reduce(t, "sum"), axis_name="batch")(tree)
+        m = pmap(lambda t: tree_all_reduce(t, "max"), axis_name="batch")(tree)
+        assert jnp.allclose(s["a"], N * (N - 1) / 2) and jnp.allclose(m["a"], N - 1)
+
+    def test_all_gather_and_reduce_scatter(self):
+        x = jnp.arange(N * 2, dtype=jnp.float32).reshape(N, 2)
+        gathered = pmap(lambda v: all_gather(v, tiled=True), axis_name="batch")(x)
+        assert gathered.shape == (N, 2 * N)
+        assert jnp.allclose(gathered[0], x.ravel())
+        big = random.normal(random.PRNGKey(0), (N, N * 3))
+        scattered = pmap(reduce_scatter, axis_name="batch")(big)
+        assert scattered.shape == (N, 3)
+        total = jnp.sum(big, axis=0)
+        for i in range(N):
+            assert jnp.allclose(scattered[i], total[3 * i:3 * (i + 1)], atol=1e-5)
+
+    def test_alltoall(self):
+        x = jnp.arange(N * N, dtype=jnp.float32).reshape(N, N)  # device i holds row i
+        out = pmap(alltoall, axis_name="batch")(x)
+        assert jnp.allclose(out, x.T)  # transpose across devices
+
+    def test_broadcast(self):
+        x = jnp.arange(N, dtype=jnp.float32) * 10
+        out = pmap(lambda v: broadcast(v, root_rank=3), axis_name="batch")(x)
+        assert jnp.allclose(out, 30.0)
+
+    def test_gradient_synchronization_clips_averaged_grad(self):
+        grads = {"w": jnp.full((N, 4), 10.0)}
+        out = pmap(lambda g: gradient_synchronization(g, clip_norm=1.0), axis_name="batch")(grads)
+        assert jnp.allclose(jnp.linalg.norm(out["w"][0]), 1.0, atol=1e-5)
+
+    def test_ring_all_reduce_equals_psum(self):
+        x = random.normal(random.PRNGKey(0), (N, N * 5, 3))
+        ring = pmap(lambda v: ring_all_reduce(v, "batch", num_devices=N), axis_name="batch")(x)
+        expected = jnp.sum(x, axis=0)
+        for i in range(N):
+            assert jnp.allclose(ring[i], expected, atol=1e-4)
+
+    def test_communication_volume(self):
+        v = compute_communication_volume([(1024, 1024)], num_devices=8)
+        assert jnp.isclose(v["bytes_sent_per_device_mb"], 2 * 7 / 8 * 4)
 
 
-class TestParallelTraining:
-    """Test end-to-end parallel training scenarios."""
-    
-    def test_data_parallel_training_loop(self):
-        """Test complete data parallel training loop."""
-        n_devices = jax.device_count()
-        if n_devices < 2:
-            pytest.skip("Need at least 2 devices for parallel training")
-        
-        # Simple linear model
-        def model(params, x):
-            return params['W'] @ x + params['b']
-        
-        def loss_fn(params, batch):
-            preds = model(params, batch['x'])
-            return jnp.mean((preds - batch['y'])**2)
-        
-        # Initialize
-        key = random.PRNGKey(42)
-        key1, key2, key3 = random.split(key, 3)
-        
-        params = {
-            'W': random.normal(key1, (2, 3)),
-            'b': random.normal(key2, (2,))
-        }
-        
-        # Create training data
-        batch_size_per_device = 8
-        x_batch = random.normal(key3, (n_devices, batch_size_per_device, 3))
-        y_batch = random.normal(key3, (n_devices, batch_size_per_device, 2))
-        batch = {'x': x_batch, 'y': y_batch}
-        
-        # Replicate parameters
-        replicated_params = replicate_params(params)
-        
-        # Training step
-        new_params, losses = data_parallel_step(loss_fn, replicated_params, batch, lr=0.01)
-        
-        # Verify training occurred
-        assert not jnp.allclose(new_params['W'], replicated_params['W'])
-        assert not jnp.allclose(new_params['b'], replicated_params['b'])
-        
-        # Verify synchronization
-        for i in range(1, n_devices):
-            assert jnp.allclose(new_params['W'][0], new_params['W'][i])
-            assert jnp.allclose(new_params['b'][0], new_params['b'][i])
-    
-    @pytest.mark.skipif(jax.device_count() < 4, reason="Need at least 4 devices")
-    def test_model_parallel_computation(self):
-        """Test model parallel computation."""
-        # This test requires more devices and is more complex
-        # Simplified test for model parallelism
-        
-        def large_matmul(x, w1, w2):
-            # First layer
-            h = x @ w1
-            # Second layer  
-            return h @ w2
-        
-        batch_size = 8
-        input_dim = 64
-        hidden_dim = 128
-        output_dim = 32
-        
+@multi
+class TestSharding:
+    def test_create_mesh(self):
+        mesh = create_mesh((N,), ("data",))
+        assert isinstance(mesh, Mesh) and mesh.shape == {"data": N}
+        mesh2 = create_mesh((2, N // 2), ("data", "model"))
+        assert mesh2.shape == {"data": 2, "model": N // 2}
+
+    def test_shard_array_with_and_without_context(self):
+        mesh = create_mesh((N,), ("batch",))
+        x = jnp.ones((16, 4))
+        sharded = shard_array(x, P("batch", None), mesh)
+        assert sharded.sharding.spec == P("batch", None)
+        assert len(sharded.addressable_shards) == N
+        assert sharded.addressable_shards[0].data.shape == (16 // N, 4)
+        with mesh:
+            assert shard_array(x, P(None, None)).sharding.spec == P(None, None)
+
+    def test_check_sharding_compatibility(self):
+        mesh = create_mesh((N,), ("batch",))
+        assert check_sharding_compatibility(jnp.ones((16, 4)), P("batch", None), mesh)
+        assert not check_sharding_compatibility(jnp.ones((N + 1, 4)), P("batch", None), mesh)
+
+    def test_partition_params_by_regex(self):
+        mesh = create_mesh((N,), ("model",))
+        params = {"embeddings": jnp.ones((N * 4, 8)), "dense": jnp.ones((8, N * 2)), "bias": jnp.ones(N * 2)}
+        rules = {r"embeddings": P("model", None), r"dense": P(None, "model")}
+        specs = partition_specs(params, rules)
+        assert specs["embeddings"] == P("model", None) and specs["bias"] == P()
+        sharded = partition_params(params, rules, mesh)
+        assert sharded["dense"].sharding.spec == P(None, "model")
+        assert sharded["bias"].sharding.spec == P()
+        summary = sharding_summary(sharded)
+        assert "['dense']" in summary and "model" in summary["['dense']"]
+
+    def test_fsdp_rules_shard_largest_axis(self):
+        params = {"w": jnp.ones((4, N * 8)), "b": jnp.ones(3)}
+        specs = fsdp_rules("data", min_size=16)(params)
+        assert specs["w"] == P(None, "data") and specs["b"] == P()
+
+    def test_transformer_rules_apply_to_stacked_layers(self):
+        from jax_nsl.models.transformer import create_transformer
+
+        mesh = create_mesh((N,), ("model",))
+        params, _ = create_transformer(d_model=N * 2, num_heads=2, num_layers=2, vocab_size=8, max_seq_len=4)
+        specs = partition_specs(params, create_transformer_partition_specs("model"))
+        assert specs["layers"]["attention"]["query"] == P(None, None, "model")
+        assert specs["layers"]["ffn"]["W2"] == P(None, "model", None)
+        assert specs["layers"]["ln1"]["scale"] == P()
+        sharded = partition_params(params, create_transformer_partition_specs("model"), mesh)
+        mem = estimate_memory_per_device(params, mesh, specs)
+        assert mem["memory_reduction_factor"] > 1.0
+        assert sharded["layers"]["attention"]["query"].addressable_shards[0].data.shape == (2, N * 2, 2)
+
+    def test_setup_model_parallelism_matches_single_device(self):
+        mesh = create_mesh((2, N // 2), ("data", "model"))
         key = random.PRNGKey(0)
-        key1, key2, key3 = random.split(key, 3)
-        
-        x = random.normal(key1, (batch_size, input_dim))
-        w1 = random.normal(key2, (input_dim, hidden_dim))
-        w2 = random.normal(key3, (hidden_dim, output_dim))
-        
-        # For now, just test that the computation works
-        result = large_matmul(x, w1, w2)
-        assert result.shape == (batch_size, output_dim)
+        x = random.normal(key, (8, 16))
+        w = random.normal(key, (16, 8 * (N // 2)))
+        fn = setup_model_parallelism(lambda x, w: jax.nn.relu(x @ w), mesh,
+                                     in_specs=(P("data", None), P(None, "model")),
+                                     out_specs=P("data", "model"))
+        out = fn(x, w)
+        assert out.sharding.spec == P("data", "model")
+        assert jnp.allclose(out, jax.nn.relu(x @ w), atol=1e-5)
 
+    def test_shard_map_matmuls(self):
+        mesh = create_mesh((N,), ("model",))
+        x = random.normal(random.PRNGKey(0), (4, N * 2))
+        w = random.normal(random.PRNGKey(1), (N * 2, N * 3))
+        col = sharded_matmul_shard_map(mesh)(x, w)
+        row = sharded_matmul_row_parallel(mesh)(x, w)
+        assert jnp.allclose(col, x @ w, atol=1e-4)
+        assert jnp.allclose(row, x @ w, atol=1e-4)
 
-class TestParallelEdgeCases:
-    """Test edge cases in parallel operations."""
-    
-    def test_single_device_pmap(self):
-        """Test pmap behavior with single device."""
-        def simple_fn(x):
-            return x * 2
-        
-        x = jnp.array([1.0, 2.0, 3.0])
-        # Add batch dimension for pmap
-        x_batched = x.reshape(1, -1)
-        
-        pmapped_fn = pmap(simple_fn)
-        result = pmapped_fn(x_batched)
-        
-        assert result.shape == (1, 3)
-        assert jnp.allclose(result[0], x * 2)
-    
-    def test_uneven_batch_sizes(self):
-        """Test handling of uneven batch sizes across devices."""
-        n_devices = jax.device_count()
-        if n_devices < 2:
-            pytest.skip("Need at least 2 devices")
-        
-        # Create data that doesn't divide evenly
-        total_batch_size = n_devices * 3 + 1  # Uneven
-        data = jnp.arange(total_batch_size, dtype=jnp.float32)
-        
-        # Pad to make it divisible
-        remainder = total_batch_size % n_devices
-        if remainder != 0:
-            padding = n_devices - remainder
-            data = jnp.concatenate([data, jnp.zeros(padding)])
-        
-        # Reshape for pmap
-        data_per_device = data.reshape(n_devices, -1)
-        
-        @pmap
-        def process_batch(x):
-            return jnp.sum(x)
-        
-        results = process_batch(data_per_device)
-        
-        assert results.shape == (n_devices,)
-        assert jnp.all(jnp.isfinite(results))
-    
-    def test_gradient_accumulation_parallel(self):
-        """Test gradient accumulation in parallel setting."""
-        n_devices = jax.device_count()
-        if n_devices < 2:
-            pytest.skip("Need at least 2 devices")
-        
-        def loss_fn(params, x, y):
-            pred = params['w'] * x
-            return (pred - y)**2
-        
-        # Initialize
-        params = {'w': jnp.array(1.0)}
-        replicated_params = replicate_params(params)
-        
-        # Multiple microbatches
-        n_microbatches = 3
-        x_data = random.normal(random.PRNGKey(0), (n_devices, n_microbatches, 2))
-        y_data = random.normal(random.PRNGKey(1), (n_devices, n_microbatches, 2))
-        
-        @pmap
-        def accumulate_gradients(params, x_batches, y_batches):
-            def compute_grad(x, y):
-                return jax.grad(loss_fn)(params, x, y)
-            
-            # Compute gradients for each microbatch
-            grads = jax.vmap(compute_grad)(x_batches, y_batches)
-            
-            # Accumulate (average) gradients
-            avg_grad = jax.tree_map(lambda g: jnp.mean(g, axis=0), grads)
-            
-            # Synchronize across devices
-            return sync_gradients(avg_grad)
-        
-        accumulated_grads = accumulate_gradients(replicated_params, x_data, y_data)
-        
-        # Check that gradients are synchronized
-        for i in range(1, n_devices):
-            assert jnp.allclose(accumulated_grads['w'][0], accumulated_grads['w'][i])
+    def test_sharded_train_step_matches_single_device(self):
+        mesh = create_mesh((N,), ("data",))
+        params, forward_fn, _ = create_mlp([4, 8, 3], seed=0)
+        init, update = sgd_optimizer(0.1)
+
+        def loss_fn(params, batch):
+            return cross_entropy_loss(forward_fn(params, batch["inputs"]), batch["labels"])
+
+        batch = {"inputs": random.normal(random.PRNGKey(0), (16, 4)),
+                 "labels": random.randint(random.PRNGKey(1), (16,), 0, 3)}
+        param_specs = jax.tree_util.tree_map(lambda _: P(), params)
+        step = make_sharded_train_step(loss_fn, update, mesh, param_specs,
+                                       {"inputs": P("data", None), "labels": P("data")})
+        new_state, loss = step(init(params), batch)
+        ref = update(init(params), jax.grad(loss_fn)(params, batch))
+        for a, b in zip(jax.tree_util.tree_leaves(new_state.params), jax.tree_util.tree_leaves(ref.params)):
+            assert jnp.allclose(a, b, atol=1e-5)
+        assert jnp.allclose(loss, loss_fn(params, batch), atol=1e-5)
 
 
 if __name__ == "__main__":

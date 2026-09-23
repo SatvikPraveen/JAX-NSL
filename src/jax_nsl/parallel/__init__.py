@@ -1,53 +1,82 @@
 # File location: src/jax_nsl/parallel/__init__.py
 
 """
-Parallelism utilities for multi-device computation.
-
-This module provides utilities for data and model parallelism using
-JAX's pmap, pjit, and collective operations.
+Multi-device computation: pmap data parallelism, jit/shard_map sharding,
+and collectives.
 """
 
-from .pmap_utils import *
-from .pjit_utils import *
-from .collectives import *
+from .collectives import (
+    all_gather,
+    all_reduce_max,
+    all_reduce_mean,
+    all_reduce_min,
+    all_reduce_sum,
+    alltoall,
+    barrier_sync,
+    broadcast,
+    compute_communication_volume,
+    cross_replica_mean,
+    distributed_dot,
+    gradient_synchronization,
+    hierarchical_all_reduce,
+    reduce_scatter,
+    ring_all_reduce,
+    sync_batch_stats,
+    tree_all_reduce,
+)
+from .pjit_utils import (
+    P,
+    check_sharding_compatibility,
+    create_mesh,
+    create_sharded_array,
+    create_transformer_partition_specs,
+    estimate_memory_per_device,
+    fsdp_rules,
+    make_sharded_train_step,
+    model_parallel_forward,
+    named_sharding,
+    partition_params,
+    partition_specs,
+    replicated,
+    setup_model_parallelism,
+    shard_array,
+    shard_large_layer,
+    shard_map_fn,
+    sharded_matmul_row_parallel,
+    sharded_matmul_shard_map,
+    sharding_summary,
+)
+from .pmap_utils import (
+    create_parallel_inference_fn,
+    create_pmap_train_step,
+    data_parallel_step,
+    device_get,
+    estimate_memory_usage,
+    parallel_eval_step,
+    parallel_train_epoch,
+    replicate_params,
+    shard_batch,
+    sync_gradients,
+    sync_params_across_devices,
+    unreplicate_params,
+)
 
 __all__ = [
     # pmap_utils.py
-    "data_parallel_step",
-    "replicate_params",
-    "unreplicate_params",
-    "shard_batch",
-    "parallel_eval_step",
-    "create_pmap_train_step",
-    "parallel_train_epoch",
-    "sync_gradients",
-    "sync_params_across_devices",
-    "device_get",
+    "replicate_params", "unreplicate_params", "shard_batch", "sync_gradients",
+    "sync_params_across_devices", "device_get", "data_parallel_step", "create_pmap_train_step",
+    "parallel_eval_step", "parallel_train_epoch", "create_parallel_inference_fn",
     "estimate_memory_usage",
-
     # pjit_utils.py
-    "create_mesh",
-    "partition_params",
-    "create_sharded_array",
-    "shard_array",
-    "pjit_train_step",
-    "model_parallel_forward",
-    "setup_model_parallelism",
+    "P", "create_mesh", "named_sharding", "replicated", "create_sharded_array", "shard_array",
+    "check_sharding_compatibility", "sharding_summary", "partition_params", "partition_specs",
+    "fsdp_rules", "create_transformer_partition_specs", "setup_model_parallelism",
+    "model_parallel_forward", "make_sharded_train_step", "shard_map_fn",
+    "sharded_matmul_shard_map", "sharded_matmul_row_parallel", "estimate_memory_per_device",
     "shard_large_layer",
-    "estimate_memory_per_device",
-
     # collectives.py
-    "all_reduce_mean",
-    "all_reduce_sum",
-    "all_reduce_max",
-    "all_reduce_min",
-    "all_gather",
-    "reduce_scatter",
-    "broadcast",
-    "barrier_sync",
-    "cross_replica_mean",
-    "tree_all_reduce",
-    "gradient_synchronization",
-    "distributed_dot",
-    "sync_batch_stats",
+    "all_reduce_mean", "all_reduce_sum", "all_reduce_max", "all_reduce_min", "cross_replica_mean",
+    "tree_all_reduce", "all_gather", "reduce_scatter", "alltoall", "broadcast", "barrier_sync",
+    "distributed_dot", "sync_batch_stats", "gradient_synchronization", "hierarchical_all_reduce",
+    "ring_all_reduce", "compute_communication_volume",
 ]
