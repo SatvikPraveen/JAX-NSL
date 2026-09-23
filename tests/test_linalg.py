@@ -150,8 +150,9 @@ class TestLinearSolvers:
     def test_conjugate_gradient_matrix_free_and_jit(self):
         a = _spd(random.PRNGKey(0), 6)
         b = random.normal(random.PRNGKey(1), (6,))
-        solve = jax.jit(lambda b: conjugate_gradient(lambda v: a @ v, b, tolerance=1e-6,
-                                                     max_iterations=60)[0])
+        solve = jax.jit(
+            lambda b: conjugate_gradient(lambda v: a @ v, b, tolerance=1e-6, max_iterations=60)[0]
+        )
         assert jnp.allclose(a @ solve(b), b, atol=1e-3)
 
     def test_conjugate_gradient_implicit_gradients(self):
@@ -223,15 +224,17 @@ class TestOptimizers:
             return jnp.sum(100.0 * (x[1:] - x[:-1] ** 2) ** 2 + (1 - x[:-1]) ** 2)
 
         x0 = jnp.array([-1.2, 1.0, -1.0, 0.5])
-        x, info = jax.jit(lambda x0: lbfgs_solver(rosenbrock, x0, tolerance=1e-4,
-                                                  max_iterations=500))(x0)
+        x, info = jax.jit(
+            lambda x0: lbfgs_solver(rosenbrock, x0, tolerance=1e-4, max_iterations=500)
+        )(x0)
         assert jnp.allclose(x, jnp.ones(4), atol=1e-2)
         assert int(info.iteration) < 500
 
     def test_lbfgs_beats_gradient_descent_in_iterations(self):
         f, x_star = self._quadratic()
-        _, gd_info = gradient_descent(f, jnp.zeros(2), learning_rate=0.1, tolerance=1e-5,
-                                      max_iterations=1000)
+        _, gd_info = gradient_descent(
+            f, jnp.zeros(2), learning_rate=0.1, tolerance=1e-5, max_iterations=1000
+        )
         _, lb_info = lbfgs_solver(f, jnp.zeros(2), tolerance=1e-5, max_iterations=100)
         assert int(lb_info.iteration) < int(gd_info.iteration)
 

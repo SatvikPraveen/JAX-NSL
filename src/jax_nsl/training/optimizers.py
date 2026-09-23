@@ -17,7 +17,8 @@ rate may be a float or a schedule ``step -> lr``.
 from __future__ import annotations
 
 import math
-from typing import Any, Callable, NamedTuple, Tuple, Union
+from collections.abc import Callable
+from typing import Any, NamedTuple
 
 import jax
 import jax.numpy as jnp
@@ -25,7 +26,7 @@ from jax import tree_util
 
 Array = jax.Array
 Schedule = Callable[[Array], Array]
-LearningRate = Union[float, Schedule]
+LearningRate = float | Schedule
 
 
 class SGDState(NamedTuple):
@@ -42,8 +43,8 @@ class MomentumState(NamedTuple):
 class AdamState(NamedTuple):
     step: Array
     params: Any
-    mu: Any   # first moment
-    nu: Any   # second moment
+    mu: Any  # first moment
+    nu: Any  # second moment
 
 
 class RMSPropState(NamedTuple):
@@ -58,10 +59,10 @@ class AdaGradState(NamedTuple):
     sum_of_squares: Any
 
 
-OptimizerState = Union[SGDState, MomentumState, AdamState, RMSPropState, AdaGradState]
+OptimizerState = SGDState | MomentumState | AdamState | RMSPropState | AdaGradState
 
 
-def get_learning_rate(learning_rate: LearningRate, step: Union[int, Array]) -> Array:
+def get_learning_rate(learning_rate: LearningRate, step: int | Array) -> Array:
     """Evaluate a float or schedule at ``step``."""
     if callable(learning_rate):
         return jnp.asarray(learning_rate(step), jnp.float32)
@@ -78,8 +79,12 @@ def _add_weight_decay(grads: Any, params: Any, weight_decay: float) -> Any:
 # Optimisers
 # ---------------------------------------------------------------------------
 
-def sgd_optimizer(learning_rate: LearningRate, weight_decay: float = 0.0) -> Tuple[Callable, Callable]:
+
+def sgd_optimizer(
+    learning_rate: LearningRate, weight_decay: float = 0.0
+) -> tuple[Callable, Callable]:
     """Plain SGD with coupled (L2) weight decay."""
+
     def init(params):
         return SGDState(step=jnp.zeros((), jnp.int32), params=params)
 
@@ -93,12 +98,20 @@ def sgd_optimizer(learning_rate: LearningRate, weight_decay: float = 0.0) -> Tup
     return init, update
 
 
-def momentum_optimizer(learning_rate: LearningRate, momentum: float = 0.9,
-                       weight_decay: float = 0.0, nesterov: bool = False) -> Tuple[Callable, Callable]:
+def momentum_optimizer(
+    learning_rate: LearningRate,
+    momentum: float = 0.9,
+    weight_decay: float = 0.0,
+    nesterov: bool = False,
+) -> tuple[Callable, Callable]:
     """SGD with (Nesterov) momentum ``v <- mu v + g``, ``p <- p - lr * (g + mu v | v)``."""
+
     def init(params):
-        return MomentumState(step=jnp.zeros((), jnp.int32), params=params,
-                             momentum=tree_util.tree_map(jnp.zeros_like, params))
+        return MomentumState(
+            step=jnp.zeros((), jnp.int32),
+            params=params,
+            momentum=tree_util.tree_map(jnp.zeros_like, params),
+        )
 
     def update(state, grads):
         lr = get_learning_rate(learning_rate, state.step)
@@ -126,9 +139,15 @@ def _adam_moments(state: AdamState, grads: Any, beta1: float, beta2: float):
     return step, mu, nu, mu_hat, nu_hat
 
 
-def adam_optimizer(learning_rate: LearningRate = 1e-3, beta1: float = 0.9, beta2: float = 0.999,
-                   eps: float = 1e-8, weight_decay: float = 0.0) -> Tuple[Callable, Callable]:
+def adam_optimizer(
+    learning_rate: LearningRate = 1e-3,
+    beta1: float = 0.9,
+    beta2: float = 0.999,
+    eps: float = 1e-8,
+    weight_decay: float = 0.0,
+) -> tuple[Callable, Callable]:
     """Adam (Kingma & Ba) with optional *coupled* L2 weight decay (added to the gradient)."""
+
     def init(params):
         zeros = tree_util.tree_map(jnp.zeros_like, params)
         return AdamState(step=jnp.zeros((), jnp.int32), params=params, mu=zeros, nu=zeros)
@@ -137,20 +156,27 @@ def adam_optimizer(learning_rate: LearningRate = 1e-3, beta1: float = 0.9, beta2
         lr = get_learning_rate(learning_rate, state.step)
         grads = _add_weight_decay(grads, state.params, weight_decay)
         step, mu, nu, mu_hat, nu_hat = _adam_moments(state, grads, beta1, beta2)
-        params = tree_util.tree_map(lambda p, m, v: p - lr * m / (jnp.sqrt(v) + eps),
-                                    state.params, mu_hat, nu_hat)
+        params = tree_util.tree_map(
+            lambda p, m, v: p - lr * m / (jnp.sqrt(v) + eps), state.params, mu_hat, nu_hat
+        )
         return AdamState(step=step, params=params, mu=mu, nu=nu)
 
     return init, update
 
 
-def adamw_optimizer(learning_rate: LearningRate = 1e-3, beta1: float = 0.9, beta2: float = 0.999,
-                    eps: float = 1e-8, weight_decay: float = 0.01) -> Tuple[Callable, Callable]:
+def adamw_optimizer(
+    learning_rate: LearningRate = 1e-3,
+    beta1: float = 0.9,
+    beta2: float = 0.999,
+    eps: float = 1e-8,
+    weight_decay: float = 0.01,
+) -> tuple[Callable, Callable]:
     """AdamW: *decoupled* weight decay ``p <- p - lr * (adam_step + wd * p)``.
 
     Unlike L2-in-the-gradient, decoupled decay is not rescaled by the
     adaptive denominator, so it acts uniformly on every parameter.
     """
+
     def init(params):
         zeros = tree_util.tree_map(jnp.zeros_like, params)
         return AdamState(step=jnp.zeros((), jnp.int32), params=params, mu=zeros, nu=zeros)
@@ -160,64 +186,95 @@ def adamw_optimizer(learning_rate: LearningRate = 1e-3, beta1: float = 0.9, beta
         step, mu, nu, mu_hat, nu_hat = _adam_moments(state, grads, beta1, beta2)
         params = tree_util.tree_map(
             lambda p, m, v: p - lr * (m / (jnp.sqrt(v) + eps) + weight_decay * p),
-            state.params, mu_hat, nu_hat)
+            state.params,
+            mu_hat,
+            nu_hat,
+        )
         return AdamState(step=step, params=params, mu=mu, nu=nu)
 
     return init, update
 
 
-def rmsprop_optimizer(learning_rate: LearningRate = 1e-2, decay: float = 0.9, eps: float = 1e-8,
-                      weight_decay: float = 0.0) -> Tuple[Callable, Callable]:
+def rmsprop_optimizer(
+    learning_rate: LearningRate = 1e-2,
+    decay: float = 0.9,
+    eps: float = 1e-8,
+    weight_decay: float = 0.0,
+) -> tuple[Callable, Callable]:
     """RMSProp: divide by a running RMS of the gradient."""
+
     def init(params):
-        return RMSPropState(step=jnp.zeros((), jnp.int32), params=params,
-                            velocity=tree_util.tree_map(jnp.zeros_like, params))
+        return RMSPropState(
+            step=jnp.zeros((), jnp.int32),
+            params=params,
+            velocity=tree_util.tree_map(jnp.zeros_like, params),
+        )
 
     def update(state, grads):
         lr = get_learning_rate(learning_rate, state.step)
         grads = _add_weight_decay(grads, state.params, weight_decay)
-        v = tree_util.tree_map(lambda v, g: decay * v + (1 - decay) * jnp.square(g), state.velocity, grads)
-        params = tree_util.tree_map(lambda p, g, v: p - lr * g / (jnp.sqrt(v) + eps),
-                                    state.params, grads, v)
+        v = tree_util.tree_map(
+            lambda v, g: decay * v + (1 - decay) * jnp.square(g), state.velocity, grads
+        )
+        params = tree_util.tree_map(
+            lambda p, g, v: p - lr * g / (jnp.sqrt(v) + eps), state.params, grads, v
+        )
         return RMSPropState(step=state.step + 1, params=params, velocity=v)
 
     return init, update
 
 
-def adagrad_optimizer(learning_rate: LearningRate = 1e-2, eps: float = 1e-8,
-                      weight_decay: float = 0.0) -> Tuple[Callable, Callable]:
+def adagrad_optimizer(
+    learning_rate: LearningRate = 1e-2, eps: float = 1e-8, weight_decay: float = 0.0
+) -> tuple[Callable, Callable]:
     """AdaGrad: per-parameter step ``lr / sqrt(sum g^2)`` (decays monotonically)."""
+
     def init(params):
-        return AdaGradState(step=jnp.zeros((), jnp.int32), params=params,
-                            sum_of_squares=tree_util.tree_map(jnp.zeros_like, params))
+        return AdaGradState(
+            step=jnp.zeros((), jnp.int32),
+            params=params,
+            sum_of_squares=tree_util.tree_map(jnp.zeros_like, params),
+        )
 
     def update(state, grads):
         lr = get_learning_rate(learning_rate, state.step)
         grads = _add_weight_decay(grads, state.params, weight_decay)
         s = tree_util.tree_map(lambda s, g: s + jnp.square(g), state.sum_of_squares, grads)
-        params = tree_util.tree_map(lambda p, g, s: p - lr * g / (jnp.sqrt(s) + eps),
-                                    state.params, grads, s)
+        params = tree_util.tree_map(
+            lambda p, g, s: p - lr * g / (jnp.sqrt(s) + eps), state.params, grads, s
+        )
         return AdaGradState(step=state.step + 1, params=params, sum_of_squares=s)
 
     return init, update
 
 
-def lion_optimizer(learning_rate: LearningRate = 1e-4, beta1: float = 0.9, beta2: float = 0.99,
-                   weight_decay: float = 0.0) -> Tuple[Callable, Callable]:
+def lion_optimizer(
+    learning_rate: LearningRate = 1e-4,
+    beta1: float = 0.9,
+    beta2: float = 0.99,
+    weight_decay: float = 0.0,
+) -> tuple[Callable, Callable]:
     """Lion (Chen et al. 2023): sign of an interpolated momentum, no second moment.
 
     Uses about half the optimiser memory of Adam; typical learning rates are
     3-10x smaller because every update has unit magnitude per element.
     """
+
     def init(params):
-        return MomentumState(step=jnp.zeros((), jnp.int32), params=params,
-                             momentum=tree_util.tree_map(jnp.zeros_like, params))
+        return MomentumState(
+            step=jnp.zeros((), jnp.int32),
+            params=params,
+            momentum=tree_util.tree_map(jnp.zeros_like, params),
+        )
 
     def update(state, grads):
         lr = get_learning_rate(learning_rate, state.step)
-        direction = tree_util.tree_map(lambda m, g: jnp.sign(beta1 * m + (1 - beta1) * g),
-                                       state.momentum, grads)
-        params = tree_util.tree_map(lambda p, d: p - lr * (d + weight_decay * p), state.params, direction)
+        direction = tree_util.tree_map(
+            lambda m, g: jnp.sign(beta1 * m + (1 - beta1) * g), state.momentum, grads
+        )
+        params = tree_util.tree_map(
+            lambda p, d: p - lr * (d + weight_decay * p), state.params, direction
+        )
         m = tree_util.tree_map(lambda m, g: beta2 * m + (1 - beta2) * g, state.momentum, grads)
         return MomentumState(step=state.step + 1, params=params, momentum=m)
 
@@ -232,6 +289,7 @@ def apply_optimizer(optimizer_state: Any, grads: Any, update_fn: Callable) -> An
 # ---------------------------------------------------------------------------
 # Gradient processing and EMA
 # ---------------------------------------------------------------------------
+
 
 def clip_grads_by_global_norm(grads: Any, max_norm: float) -> Any:
     """Rescale the whole gradient pytree so its global L2 norm is at most ``max_norm``."""
@@ -259,6 +317,7 @@ def ema_update_debiased(ema_params: Any, params: Any, step: Array, decay: float 
 # Learning-rate schedules
 # ---------------------------------------------------------------------------
 
+
 def create_learning_rate_schedule(schedule_type: str, base_lr: float, **kwargs) -> Schedule:
     """Build a schedule ``step -> lr`` (all functions of a traced step, so jit-safe).
 
@@ -281,7 +340,8 @@ def create_learning_rate_schedule(schedule_type: str, base_lr: float, **kwargs) 
         return lambda step: base_lr + (final_lr - base_lr) * jnp.minimum(step / total, 1.0)
     if schedule_type == "cosine":
         return lambda step: final_lr + 0.5 * (base_lr - final_lr) * (
-            1.0 + jnp.cos(math.pi * jnp.minimum(step / total, 1.0)))
+            1.0 + jnp.cos(math.pi * jnp.minimum(step / total, 1.0))
+        )
     if schedule_type == "exponential":
         rate, steps = kwargs.get("decay_rate", 0.96), kwargs.get("decay_steps", 100)
         return lambda step: base_lr * rate ** (step / steps)

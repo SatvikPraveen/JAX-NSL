@@ -25,7 +25,8 @@ optimisation layers and the implicit CG gradient in
 from __future__ import annotations
 
 import functools
-from typing import Any, Callable, Tuple
+from collections.abc import Callable
+from typing import Any
 
 import jax
 import jax.numpy as jnp
@@ -38,13 +39,17 @@ def _tree_norm(t: Any) -> Array:
     return jnp.sqrt(sum(jnp.sum(jnp.square(leaf)) for leaf in jax.tree_util.tree_leaves(t)))
 
 
-def _iterate_to_fixed_point(step: Callable[[Any], Any], x0: Any, tolerance: float,
-                            max_iterations: int) -> Tuple[Any, Array]:
+def _iterate_to_fixed_point(
+    step: Callable[[Any], Any], x0: Any, tolerance: float, max_iterations: int
+) -> tuple[Any, Array]:
     """Run ``x <- step(x)`` until ``||x_new - x|| < tolerance``; returns ``(x, iters)``."""
+
     def cond(state):
         x, x_prev, k = state
-        return jnp.logical_and(_tree_norm(jax.tree_util.tree_map(jnp.subtract, x, x_prev)) >= tolerance,
-                               k < max_iterations)
+        return jnp.logical_and(
+            _tree_norm(jax.tree_util.tree_map(jnp.subtract, x, x_prev)) >= tolerance,
+            k < max_iterations,
+        )
 
     def body(state):
         x, _, k = state
@@ -56,8 +61,13 @@ def _iterate_to_fixed_point(step: Callable[[Any], Any], x0: Any, tolerance: floa
 
 
 @functools.partial(jax.custom_vjp, nondiff_argnums=(0, 3, 4))
-def fixed_point(f: Callable[[Any, Any], Any], params: Any, x_init: Any,
-                tolerance: float = 1e-6, max_iterations: int = 1000) -> Any:
+def fixed_point(
+    f: Callable[[Any, Any], Any],
+    params: Any,
+    x_init: Any,
+    tolerance: float = 1e-6,
+    max_iterations: int = 1000,
+) -> Any:
     """Solve ``x = f(params, x)`` and differentiate the solution implicitly.
 
     Args:
@@ -96,14 +106,16 @@ def _fixed_point_bwd(f, tolerance, max_iterations, residuals, g):
 fixed_point.defvjp(_fixed_point_fwd, _fixed_point_bwd)
 
 
-def fixed_point_unrolled(f: Callable[[Any, Any], Any], params: Any, x_init: Any,
-                         num_iterations: int) -> Any:
+def fixed_point_unrolled(
+    f: Callable[[Any, Any], Any], params: Any, x_init: Any, num_iterations: int
+) -> Any:
     """Same solve with a fixed iteration count via ``scan`` - differentiable by unrolling.
 
     Provided for comparison: the gradient is exact for the *truncated*
     iteration (not the true fixed point) and memory grows with
     ``num_iterations`` because every iterate is saved for the backward pass.
     """
+
     def body(x, _):
         return f(params, x), None
 
@@ -111,8 +123,13 @@ def fixed_point_unrolled(f: Callable[[Any, Any], Any], params: Any, x_init: Any,
     return x
 
 
-def implicit_newton_solve(residual: Callable[[Any, Array], Array], params: Any, x_init: Array,
-                          tolerance: float = 1e-8, max_iterations: int = 50) -> Array:
+def implicit_newton_solve(
+    residual: Callable[[Any, Array], Array],
+    params: Any,
+    x_init: Array,
+    tolerance: float = 1e-8,
+    max_iterations: int = 50,
+) -> Array:
     """Root of ``residual(params, x) = 0`` by Newton's method with an implicit gradient.
 
     Uses :func:`fixed_point` on the Newton map ``x -> x - J^{-1} r(x)``; since
@@ -120,6 +137,7 @@ def implicit_newton_solve(residual: Callable[[Any, Array], Array], params: Any, 
     implicit-function-theorem gradient ``-J_x^{-1} J_params``.  ``x`` must be
     a 1-D array (dense Jacobian solve).
     """
+
     def newton_step(p, x):
         r = residual(p, x)
         J = jax.jacfwd(lambda y: residual(p, y))(x)

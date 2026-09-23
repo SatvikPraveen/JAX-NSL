@@ -20,7 +20,8 @@ Numerical details that matter:
 from __future__ import annotations
 
 import math
-from typing import Any, Callable, Dict, Optional, Tuple
+from collections.abc import Callable
+from typing import Any
 
 import jax
 import jax.numpy as jnp
@@ -36,32 +37,41 @@ Array = jax.Array
 # Parameters
 # ---------------------------------------------------------------------------
 
-def init_attention_params(key: Array, d_model: int, num_heads: int, dtype: Any = jnp.float32
-                          ) -> Dict[str, Array]:
+
+def init_attention_params(
+    key: Array, d_model: int, num_heads: int, dtype: Any = jnp.float32
+) -> dict[str, Array]:
     """Projection matrices ``query``, ``key``, ``value``, ``out`` (all ``d_model x d_model``)."""
     if d_model % num_heads:
         raise ValueError(f"d_model={d_model} must be divisible by num_heads={num_heads}")
     keys = jr.split(key, 4)
-    return {name: glorot_uniform_init(k, (d_model, d_model), dtype)
-            for name, k in zip(("query", "key", "value", "out"), keys)}
+    return {
+        name: glorot_uniform_init(k, (d_model, d_model), dtype)
+        for name, k in zip(("query", "key", "value", "out"), keys)
+    }
 
 
-def init_feed_forward_params(key: Array, d_model: int, d_ff: int, dtype: Any = jnp.float32
-                             ) -> Dict[str, Array]:
+def init_feed_forward_params(
+    key: Array, d_model: int, d_ff: int, dtype: Any = jnp.float32
+) -> dict[str, Array]:
     """``W1 (d_model x d_ff), b1, W2 (d_ff x d_model), b2``."""
     k1, k2 = jr.split(key)
-    return {"W1": glorot_uniform_init(k1, (d_model, d_ff), dtype), "b1": jnp.zeros(d_ff, dtype),
-            "W2": glorot_uniform_init(k2, (d_ff, d_model), dtype), "b2": jnp.zeros(d_model, dtype)}
+    return {
+        "W1": glorot_uniform_init(k1, (d_model, d_ff), dtype),
+        "b1": jnp.zeros(d_ff, dtype),
+        "W2": glorot_uniform_init(k2, (d_ff, d_model), dtype),
+        "b2": jnp.zeros(d_model, dtype),
+    }
 
 
-def init_layer_norm_params(d: int, dtype: Any = jnp.float32) -> Dict[str, Array]:
+def init_layer_norm_params(d: int, dtype: Any = jnp.float32) -> dict[str, Array]:
     """``scale`` ones and ``bias`` zeros."""
     return {"scale": jnp.ones(d, dtype), "bias": jnp.zeros(d, dtype)}
 
 
-def init_transformer_block_params(key: Array, d_model: int, num_heads: int,
-                                  d_ff: Optional[int] = None, dtype: Any = jnp.float32
-                                  ) -> Dict[str, Any]:
+def init_transformer_block_params(
+    key: Array, d_model: int, num_heads: int, d_ff: int | None = None, dtype: Any = jnp.float32
+) -> dict[str, Any]:
     """Nested params for one block: ``attention``, ``ffn``, ``ln1``, ``ln2``."""
     d_ff = d_ff or 4 * d_model
     k_attn, k_ff = jr.split(key)
@@ -76,6 +86,7 @@ def init_transformer_block_params(key: Array, d_model: int, num_heads: int,
 # ---------------------------------------------------------------------------
 # Normalisation
 # ---------------------------------------------------------------------------
+
 
 def layer_norm(x: Array, scale: Array, bias: Array, epsilon: float = 1e-6) -> Array:
     """Normalise over the last axis; statistics are computed in float32."""
@@ -97,6 +108,7 @@ def rms_norm(x: Array, scale: Array, epsilon: float = 1e-6) -> Array:
 # Positional information
 # ---------------------------------------------------------------------------
 
+
 def positional_encoding(seq_len: int, d_model: int, base: float = 10000.0) -> Array:
     """Sinusoidal encoding ``PE[pos, 2i] = sin(pos / base^(2i/d))``, ``PE[pos, 2i+1] = cos(...)``."""
     position = jnp.arange(seq_len)[:, None]
@@ -107,7 +119,7 @@ def positional_encoding(seq_len: int, d_model: int, base: float = 10000.0) -> Ar
     return pe
 
 
-def rotary_embedding(x: Array, positions: Optional[Array] = None, base: float = 10000.0) -> Array:
+def rotary_embedding(x: Array, positions: Array | None = None, base: float = 10000.0) -> Array:
     """Rotary position embedding (RoPE) applied to the last axis of ``x``.
 
     Pairs of features ``(x[2i], x[2i+1])`` are rotated by an angle
@@ -133,6 +145,7 @@ def rotary_embedding(x: Array, positions: Optional[Array] = None, base: float = 
 # Attention
 # ---------------------------------------------------------------------------
 
+
 def create_causal_mask(seq_len: int) -> Array:
     """Boolean ``(seq_len, seq_len)`` lower-triangular mask (True = may attend)."""
     return jnp.tril(jnp.ones((seq_len, seq_len), dtype=bool))
@@ -143,7 +156,7 @@ def create_padding_mask(tokens: Array, pad_token: int = 0) -> Array:
     return (tokens != pad_token)[:, None, None, :]
 
 
-def combine_masks(*masks: Optional[Array]) -> Optional[Array]:
+def combine_masks(*masks: Array | None) -> Array | None:
     """Logical AND of broadcastable boolean masks (``None`` entries ignored)."""
     present = [m for m in masks if m is not None]
     if not present:
@@ -154,18 +167,24 @@ def combine_masks(*masks: Optional[Array]) -> Optional[Array]:
     return out
 
 
-def scaled_dot_product_attention(query: Array, key: Array, value: Array,
-                                 mask: Optional[Array] = None, dropout_rate: float = 0.0,
-                                 key_rng: Optional[Array] = None, training: bool = True
-                                 ) -> Tuple[Array, Array]:
+def scaled_dot_product_attention(
+    query: Array,
+    key: Array,
+    value: Array,
+    mask: Array | None = None,
+    dropout_rate: float = 0.0,
+    key_rng: Array | None = None,
+    training: bool = True,
+) -> tuple[Array, Array]:
     """``softmax(Q K^T / sqrt(d_k)) V`` for inputs of shape ``(..., seq, d)``.
 
     Returns ``(output, attention_weights)``.  ``mask`` is boolean and must
     broadcast to ``(..., q_len, k_len)``; True means "may attend".
     """
     d_k = query.shape[-1]
-    scores = jnp.einsum("...qd,...kd->...qk", query, key,
-                        preferred_element_type=jnp.float32) / math.sqrt(d_k)
+    scores = jnp.einsum(
+        "...qd,...kd->...qk", query, key, preferred_element_type=jnp.float32
+    ) / math.sqrt(d_k)
     if mask is not None:
         scores = jnp.where(mask, scores, jnp.finfo(scores.dtype).min)
     weights = jax.nn.softmax(scores, axis=-1)
@@ -186,10 +205,17 @@ def _merge_heads(x: Array) -> Array:
     return x.transpose(0, 2, 1, 3).reshape(b, s, h * dk)
 
 
-def multi_head_attention(x: Array, params: Dict[str, Array], num_heads: int,
-                         mask: Optional[Array] = None, context: Optional[Array] = None,
-                         dropout_rate: float = 0.0, key_rng: Optional[Array] = None,
-                         training: bool = True, rotary: bool = False) -> Tuple[Array, Array]:
+def multi_head_attention(
+    x: Array,
+    params: dict[str, Array],
+    num_heads: int,
+    mask: Array | None = None,
+    context: Array | None = None,
+    dropout_rate: float = 0.0,
+    key_rng: Array | None = None,
+    training: bool = True,
+    rotary: bool = False,
+) -> tuple[Array, Array]:
     """Multi-head (self- or cross-) attention.
 
     Args:
@@ -214,16 +240,23 @@ def multi_head_attention(x: Array, params: Dict[str, Array], num_heads: int,
     return _merge_heads(out) @ params["out"], weights
 
 
-def feed_forward_network(x: Array, params: Dict[str, Array], activation: str = "gelu") -> Array:
+def feed_forward_network(x: Array, params: dict[str, Array], activation: str = "gelu") -> Array:
     """``W2 act(W1 x + b1) + b2`` applied position-wise."""
     act = {"relu": jax.nn.relu, "gelu": jax.nn.gelu, "silu": jax.nn.silu}[activation]
     return act(x @ params["W1"] + params["b1"]) @ params["W2"] + params["b2"]
 
 
-def transformer_block(x: Array, params: Dict[str, Any], num_heads: int,
-                      mask: Optional[Array] = None, dropout_rate: float = 0.0,
-                      key_rng: Optional[Array] = None, training: bool = True,
-                      pre_norm: bool = True, rotary: bool = False) -> Array:
+def transformer_block(
+    x: Array,
+    params: dict[str, Any],
+    num_heads: int,
+    mask: Array | None = None,
+    dropout_rate: float = 0.0,
+    key_rng: Array | None = None,
+    training: bool = True,
+    pre_norm: bool = True,
+    rotary: bool = False,
+) -> Array:
     """One encoder block.
 
     ``pre_norm=True`` (LayerNorm before each sub-layer, residual around it)
@@ -232,13 +265,15 @@ def transformer_block(x: Array, params: Dict[str, Any], num_heads: int,
     """
     if pre_norm:
         h = layer_norm(x, **params["ln1"])
-        attn, _ = multi_head_attention(h, params["attention"], num_heads, mask, None,
-                                       dropout_rate, key_rng, training, rotary)
+        attn, _ = multi_head_attention(
+            h, params["attention"], num_heads, mask, None, dropout_rate, key_rng, training, rotary
+        )
         x = x + attn
         h = layer_norm(x, **params["ln2"])
         return x + feed_forward_network(h, params["ffn"])
-    attn, _ = multi_head_attention(x, params["attention"], num_heads, mask, None,
-                                   dropout_rate, key_rng, training, rotary)
+    attn, _ = multi_head_attention(
+        x, params["attention"], num_heads, mask, None, dropout_rate, key_rng, training, rotary
+    )
     x = layer_norm(x + attn, **params["ln1"])
     return layer_norm(x + feed_forward_network(x, params["ffn"]), **params["ln2"])
 
@@ -247,10 +282,19 @@ def transformer_block(x: Array, params: Dict[str, Any], num_heads: int,
 # Full model
 # ---------------------------------------------------------------------------
 
-def create_transformer(d_model: int, num_heads: int, num_layers: int, d_ff: Optional[int] = None,
-                       max_seq_len: int = 1024, vocab_size: Optional[int] = None,
-                       seed: int = 42, dtype: Any = jnp.float32, remat: bool = False,
-                       pre_norm: bool = True) -> Tuple[Dict[str, Any], Callable]:
+
+def create_transformer(
+    d_model: int,
+    num_heads: int,
+    num_layers: int,
+    d_ff: int | None = None,
+    max_seq_len: int = 1024,
+    vocab_size: int | None = None,
+    seed: int = 42,
+    dtype: Any = jnp.float32,
+    remat: bool = False,
+    pre_norm: bool = True,
+) -> tuple[dict[str, Any], Callable]:
     """Encoder stack whose layer parameters are *stacked* along a leading axis.
 
     Returns ``(params, forward_fn)``; ``forward_fn(params, x, mask=None,
@@ -262,9 +306,10 @@ def create_transformer(d_model: int, num_heads: int, num_layers: int, d_ff: Opti
     is wrapped in ``jax.checkpoint`` so activation memory stays flat in depth.
     """
     keys = jr.split(jr.PRNGKey(seed), num_layers + 1)
-    layer_params = [init_transformer_block_params(k, d_model, num_heads, d_ff, dtype)
-                    for k in keys[:num_layers]]
-    params: Dict[str, Any] = {
+    layer_params = [
+        init_transformer_block_params(k, d_model, num_heads, d_ff, dtype) for k in keys[:num_layers]
+    ]
+    params: dict[str, Any] = {
         "layers": jax.tree_util.tree_map(lambda *xs: jnp.stack(xs), *layer_params),
         "final_ln": init_layer_norm_params(d_model, dtype),
         "pos_encoding": positional_encoding(max_seq_len, d_model).astype(dtype),
@@ -273,16 +318,32 @@ def create_transformer(d_model: int, num_heads: int, num_layers: int, d_ff: Opti
         params["embedding"] = glorot_uniform_init(keys[-1], (vocab_size, d_model), dtype)
 
     def forward_fn(params, x, mask=None, training=True, key_rng=None, dropout_rate=0.0):
-        return transformer_forward(params, x, num_heads, mask, training, key_rng, dropout_rate,
-                                   remat=remat, pre_norm=pre_norm)
+        return transformer_forward(
+            params,
+            x,
+            num_heads,
+            mask,
+            training,
+            key_rng,
+            dropout_rate,
+            remat=remat,
+            pre_norm=pre_norm,
+        )
 
     return params, forward_fn
 
 
-def transformer_forward(params: Dict[str, Any], x: Array, num_heads: int,
-                        mask: Optional[Array] = None, training: bool = True,
-                        key_rng: Optional[Array] = None, dropout_rate: float = 0.0,
-                        remat: bool = False, pre_norm: bool = True) -> Array:
+def transformer_forward(
+    params: dict[str, Any],
+    x: Array,
+    num_heads: int,
+    mask: Array | None = None,
+    training: bool = True,
+    key_rng: Array | None = None,
+    dropout_rate: float = 0.0,
+    remat: bool = False,
+    pre_norm: bool = True,
+) -> Array:
     """Embed (if needed), add positions, scan over the stacked layers, final LayerNorm."""
     if "embedding" in params and x.ndim == 2:
         x = params["embedding"][x]
@@ -290,14 +351,21 @@ def transformer_forward(params: Dict[str, Any], x: Array, num_heads: int,
     x = x + params["pos_encoding"][:seq_len]
 
     num_layers = jax.tree_util.tree_leaves(params["layers"])[0].shape[0]
-    layer_keys = (jr.split(key_rng, num_layers) if key_rng is not None
-                  else jnp.zeros((num_layers, 2), jnp.uint32))
+    layer_keys = (
+        jr.split(key_rng, num_layers)
+        if key_rng is not None
+        else jnp.zeros((num_layers, 2), jnp.uint32)
+    )
 
     def layer(carry, inputs):
         layer_params, k = inputs
         k = k if key_rng is not None else None
-        return transformer_block(carry, layer_params, num_heads, mask, dropout_rate, k,
-                                 training, pre_norm), None
+        return (
+            transformer_block(
+                carry, layer_params, num_heads, mask, dropout_rate, k, training, pre_norm
+            ),
+            None,
+        )
 
     body = jax.checkpoint(layer) if remat else layer
     x, _ = lax.scan(body, x, (params["layers"], layer_keys))

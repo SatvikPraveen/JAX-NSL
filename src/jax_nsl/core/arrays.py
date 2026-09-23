@@ -6,7 +6,8 @@ Array and pytree utilities: dtype introspection, safe casting, tree summaries.
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, Optional, Tuple
+from collections.abc import Callable
+from typing import Any
 
 import jax
 import jax.numpy as jnp
@@ -15,20 +16,26 @@ from jax import tree_util
 Array = jax.Array
 
 
-def get_dtype_info(dtype: Any) -> Dict[str, Any]:
+def get_dtype_info(dtype: Any) -> dict[str, Any]:
     """Describe a dtype: name, itemsize, kind, plus ``finfo``/``iinfo`` limits.
 
     Accepts anything ``jnp.dtype`` accepts (``jnp.float32``, ``"bfloat16"``,
     an array's ``.dtype`` ...).
     """
     dtype = jnp.dtype(dtype)
-    info: Dict[str, Any] = {"name": dtype.name, "itemsize": dtype.itemsize, "kind": dtype.kind}
+    info: dict[str, Any] = {"name": dtype.name, "itemsize": dtype.itemsize, "kind": dtype.kind}
 
     if jnp.issubdtype(dtype, jnp.floating):
         finfo = jnp.finfo(dtype)
-        info.update(eps=float(finfo.eps), max=float(finfo.max), min=float(finfo.min),
-                    tiny=float(finfo.tiny), precision=int(finfo.precision),
-                    resolution=float(finfo.resolution), bits=int(finfo.bits))
+        info.update(
+            eps=float(finfo.eps),
+            max=float(finfo.max),
+            min=float(finfo.min),
+            tiny=float(finfo.tiny),
+            precision=int(finfo.precision),
+            resolution=float(finfo.resolution),
+            bits=int(finfo.bits),
+        )
     elif jnp.issubdtype(dtype, jnp.integer):
         iinfo = jnp.iinfo(dtype)
         info.update(max=int(iinfo.max), min=int(iinfo.min), bits=int(iinfo.bits))
@@ -62,6 +69,7 @@ def check_finite(x: Array) -> bool:
 # Pytree analysis
 # ---------------------------------------------------------------------------
 
+
 def _array_leaves(tree: Any):
     return [leaf for leaf in tree_util.tree_leaves(tree) if hasattr(leaf, "shape")]
 
@@ -76,7 +84,7 @@ def tree_bytes(tree: Any) -> int:
     return int(sum(leaf.nbytes for leaf in _array_leaves(tree)))
 
 
-def tree_summary(tree: Any, name: str = "Tree") -> Dict[str, Any]:
+def tree_summary(tree: Any, name: str = "Tree") -> dict[str, Any]:
     """Summarise a pytree: leaf count, elements, bytes, shapes, dtypes, devices."""
     arrays = _array_leaves(tree)
     if not arrays:
@@ -114,8 +122,10 @@ def tree_map_with_path(f: Callable[[Any, Any], Any], tree: Any) -> Any:
 # Common array patterns
 # ---------------------------------------------------------------------------
 
-def create_mesh_grid(shape: Tuple[int, ...],
-                     bounds: Optional[Tuple[Tuple[float, float], ...]] = None) -> list:
+
+def create_mesh_grid(
+    shape: tuple[int, ...], bounds: tuple[tuple[float, float], ...] | None = None
+) -> list:
     """``meshgrid(indexing='ij')`` over ``linspace`` axes with the given bounds."""
     if bounds is None:
         bounds = tuple((0.0, float(s - 1)) for s in shape)
@@ -132,8 +142,9 @@ def sliding_window(x: Array, window_size: int, stride: int = 1) -> Array:
     return x[..., idx]
 
 
-def pad_to_shape(x: Array, target_shape: Tuple[int, ...],
-                 mode: str = "constant", constant_values: float = 0.0) -> Array:
+def pad_to_shape(
+    x: Array, target_shape: tuple[int, ...], mode: str = "constant", constant_values: float = 0.0
+) -> Array:
     """Right-pad ``x`` so that its shape equals ``target_shape``."""
     if x.ndim != len(target_shape):
         raise ValueError(f"Rank mismatch: {x.shape} vs {target_shape}")

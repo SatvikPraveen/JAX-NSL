@@ -21,7 +21,8 @@ precision for analytic functions.
 from __future__ import annotations
 
 import functools
-from typing import Any, Callable, Dict, Optional, Tuple, Union
+from collections.abc import Callable
+from typing import Any
 
 import jax
 import jax.numpy as jnp
@@ -35,8 +36,10 @@ Array = jax.Array
 # Checked derivatives
 # ---------------------------------------------------------------------------
 
-def checked_grad(fun: Callable, argnums: Union[int, Tuple[int, ...]] = 0,
-                 has_aux: bool = False) -> Callable:
+
+def checked_grad(
+    fun: Callable, argnums: int | tuple[int, ...] = 0, has_aux: bool = False
+) -> Callable:
     """``grad`` that also reports non-finite results through ``checkify``.
 
     Returns a function ``(*args) -> (err, grads)``.  Call ``err.throw()`` to
@@ -49,16 +52,21 @@ def checked_grad(fun: Callable, argnums: Union[int, Tuple[int, ...]] = 0,
     def with_check(*args, **kwargs):
         out = grad_fn(*args, **kwargs)
         grads = out[0] if has_aux else out
-        finite = jnp.all(jnp.stack([jnp.all(jnp.isfinite(g))
-                                    for g in jax.tree_util.tree_leaves(grads)]))
+        finite = jnp.all(
+            jnp.stack([jnp.all(jnp.isfinite(g)) for g in jax.tree_util.tree_leaves(grads)])
+        )
         checkify.check(finite, "non-finite gradient")
         return out
 
     return checkify.checkify(with_check)
 
 
-def safe_grad(fun: Callable, argnums: Union[int, Tuple[int, ...]] = 0, has_aux: bool = False,
-              on_nonfinite: str = "raise") -> Callable:
+def safe_grad(
+    fun: Callable,
+    argnums: int | tuple[int, ...] = 0,
+    has_aux: bool = False,
+    on_nonfinite: str = "raise",
+) -> Callable:
     """Gradient with explicit handling of non-finite values.
 
     Args:
@@ -91,7 +99,7 @@ def safe_grad(fun: Callable, argnums: Union[int, Tuple[int, ...]] = 0, has_aux: 
     @functools.wraps(fun)
     def zeroed(*args, **kwargs):
         out = grad_fn(*args, **kwargs)
-        grads, aux = (out if has_aux else (out, None))
+        grads, aux = out if has_aux else (out, None)
         grads = jax.tree_util.tree_map(lambda g: jnp.where(jnp.isfinite(g), g, 0.0), grads)
         return (grads, aux) if has_aux else grads
 
@@ -107,8 +115,10 @@ safe_hessian = hessian
 # Value + derivative in one call
 # ---------------------------------------------------------------------------
 
-def grad_and_value(fun: Callable, argnums: Union[int, Tuple[int, ...]] = 0,
-                   has_aux: bool = False) -> Callable:
+
+def grad_and_value(
+    fun: Callable, argnums: int | tuple[int, ...] = 0, has_aux: bool = False
+) -> Callable:
     """``(grad, value)`` (or ``(grad, value, aux)``) from a single forward/backward pass."""
     vg = jax.value_and_grad(fun, argnums=argnums, has_aux=has_aux)
 
@@ -123,8 +133,9 @@ def grad_and_value(fun: Callable, argnums: Union[int, Tuple[int, ...]] = 0,
     return wrapped
 
 
-def jacobian_and_value(fun: Callable, argnums: Union[int, Tuple[int, ...]] = 0) -> Callable:
+def jacobian_and_value(fun: Callable, argnums: int | tuple[int, ...] = 0) -> Callable:
     """``(jacobian, value)``; the value comes from the JVP/VJP primal, not a second call."""
+
     def wrapped(*args, **kwargs):
         value = fun(*args, **kwargs)
         return jacobian(fun, argnums=argnums)(*args, **kwargs), value
@@ -132,8 +143,9 @@ def jacobian_and_value(fun: Callable, argnums: Union[int, Tuple[int, ...]] = 0) 
     return wrapped
 
 
-def hessian_and_value(fun: Callable, argnums: Union[int, Tuple[int, ...]] = 0) -> Callable:
+def hessian_and_value(fun: Callable, argnums: int | tuple[int, ...] = 0) -> Callable:
     """``(hessian, value)`` for a scalar function."""
+
     def wrapped(*args, **kwargs):
         return hessian(fun, argnums=argnums)(*args, **kwargs), fun(*args, **kwargs)
 
@@ -144,6 +156,7 @@ def hessian_and_value(fun: Callable, argnums: Union[int, Tuple[int, ...]] = 0) -
 # Jacobians: picking the mode
 # ---------------------------------------------------------------------------
 
+
 def auto_jacobian(fun: Callable, argnums: int = 0) -> Callable:
     """Pick ``jacfwd`` or ``jacrev`` from the input/output sizes at call time.
 
@@ -151,11 +164,13 @@ def auto_jacobian(fun: Callable, argnums: int = 0) -> Callable:
     *output* element, so wide functions (few inputs, many outputs) prefer
     forward mode and tall ones reverse mode.
     """
+
     def wrapped(*args, **kwargs):
         out_shape = jax.eval_shape(fun, *args, **kwargs)
         n_out = sum(int(jnp.prod(jnp.array(o.shape))) for o in jax.tree_util.tree_leaves(out_shape))
-        n_in = sum(int(jnp.prod(jnp.array(a.shape)))
-                   for a in jax.tree_util.tree_leaves(args[argnums]))
+        n_in = sum(
+            int(jnp.prod(jnp.array(a.shape))) for a in jax.tree_util.tree_leaves(args[argnums])
+        )
         mode = jacfwd if n_in <= n_out else jacrev
         return mode(fun, argnums=argnums)(*args, **kwargs)
 
@@ -175,6 +190,7 @@ def batch_hessian(fun: Callable, argnums: int = 0) -> Callable:
 # ---------------------------------------------------------------------------
 # Products with the Hessian
 # ---------------------------------------------------------------------------
+
 
 def directional_derivative(fun: Callable, x: Any, v: Any) -> Any:
     """``J(x) v`` via a single JVP (forward mode)."""
@@ -197,8 +213,11 @@ def hvp_reverse_over_reverse(fun: Callable[[Any], Array], x: Any, v: Any) -> Any
     Slower and more memory-hungry than forward-over-reverse; included so the
     two can be compared.
     """
-    return grad(lambda y: jax.tree_util.tree_reduce(
-        jnp.add, jax.tree_util.tree_map(lambda g, t: jnp.sum(g * t), grad(fun)(y), v)))(x)
+    return grad(
+        lambda y: jax.tree_util.tree_reduce(
+            jnp.add, jax.tree_util.tree_map(lambda g, t: jnp.sum(g * t), grad(fun)(y), v)
+        )
+    )(x)
 
 
 def gauss_newton_vp(model: Callable[[Any], Array], x: Any, v: Any) -> Any:
@@ -220,8 +239,9 @@ def hessian_diagonal(fun: Callable[[Array], Array], x: Array) -> Array:
     return jax.vmap(lambda e: jnp.dot(e, hvp(fun, x, e)))(basis)
 
 
-def hessian_trace_hutchinson(fun: Callable[[Array], Array], x: Array, key: Array,
-                             num_samples: int = 32) -> Array:
+def hessian_trace_hutchinson(
+    fun: Callable[[Array], Array], x: Array, key: Array, num_samples: int = 32
+) -> Array:
     """Hutchinson estimator ``E[v^T H v]`` with Rademacher ``v``; unbiased for ``tr(H)``.
 
     Each sample costs one HVP, so this scales to parameter counts where the
@@ -236,8 +256,10 @@ def hessian_trace_hutchinson(fun: Callable[[Array], Array], x: Array, key: Array
 # Finite differences and gradient checking
 # ---------------------------------------------------------------------------
 
-def finite_diff_grad(fun: Callable[[Array], Array], x: Array, eps: Optional[float] = None,
-                     method: str = "central") -> Array:
+
+def finite_diff_grad(
+    fun: Callable[[Array], Array], x: Array, eps: float | None = None, method: str = "central"
+) -> Array:
     """Numerical gradient of a scalar function.
 
     Args:
@@ -284,9 +306,14 @@ def finite_diff_grad(fun: Callable[[Array], Array], x: Array, eps: Optional[floa
     return jax.vmap(partial)(jnp.arange(n)).reshape(x.shape)
 
 
-def gradient_checker(fun: Callable[[Array], Array], x: Array, eps: Optional[float] = None,
-                     rtol: float = 1e-2, atol: float = 1e-4, method: str = "central"
-                     ) -> Tuple[bool, float]:
+def gradient_checker(
+    fun: Callable[[Array], Array],
+    x: Array,
+    eps: float | None = None,
+    rtol: float = 1e-2,
+    atol: float = 1e-4,
+    method: str = "central",
+) -> tuple[bool, float]:
     """Compare ``jax.grad`` with finite differences; returns ``(ok, max_abs_error)``.
 
     Default tolerances are appropriate for float32 central differences.  Use
@@ -298,7 +325,7 @@ def gradient_checker(fun: Callable[[Array], Array], x: Array, eps: Optional[floa
     return bool(jnp.allclose(g_ad, g_fd, rtol=rtol, atol=atol)), max_error
 
 
-def gradient_check_report(fun: Callable[[Array], Array], x: Array) -> Dict[str, float]:
+def gradient_check_report(fun: Callable[[Array], Array], x: Array) -> dict[str, float]:
     """Max abs error of forward/central/complex-step estimates against ``jax.grad``."""
     g_ad = grad(fun)(x)
     out = {}
@@ -315,6 +342,7 @@ def gradient_check_report(fun: Callable[[Array], Array], x: Array) -> Dict[str, 
 # ---------------------------------------------------------------------------
 # Convenience wrappers (compute and return the value directly)
 # ---------------------------------------------------------------------------
+
 
 def compute_gradient(fun: Callable, x: Any, argnums: int = 0) -> Any:
     """``grad(fun, argnums)(x)``."""

@@ -165,8 +165,9 @@ class TestPRNG:
 
 
 class TestInitializers:
-    @pytest.mark.parametrize("init", [glorot_uniform_init, glorot_normal_init,
-                                      he_uniform_init, he_normal_init])
+    @pytest.mark.parametrize(
+        "init", [glorot_uniform_init, glorot_normal_init, he_uniform_init, he_normal_init]
+    )
     def test_shape_and_dtype(self, init):
         w = init(random.PRNGKey(0), (4, 8), dtype=jnp.bfloat16)
         assert w.shape == (4, 8)

@@ -12,19 +12,21 @@ techniques (max-shifting, the "double where" trick, dtype-aware step sizes).
 from __future__ import annotations
 
 import math
-from typing import Any, Callable, Literal, Optional, Tuple, Union, overload
+from collections.abc import Callable
+from typing import Any, Literal, overload
 
 import jax
 import jax.numpy as jnp
 from jax import lax
 
 Array = jax.Array
-Axis = Optional[Union[int, Tuple[int, ...]]]
+Axis = int | tuple[int, ...] | None
 
 
 # ---------------------------------------------------------------------------
 # Elementwise safe math
 # ---------------------------------------------------------------------------
+
 
 def safe_log(x: Array, eps: float = 1e-8) -> Array:
     """``log(max(x, eps))`` so that zeros (and small negatives) never give -inf/NaN.
@@ -35,7 +37,7 @@ def safe_log(x: Array, eps: float = 1e-8) -> Array:
     return jnp.log(jnp.maximum(x, eps))
 
 
-def safe_exp(x: Array, max_val: Optional[float] = None) -> Array:
+def safe_exp(x: Array, max_val: float | None = None) -> Array:
     """``exp(min(x, max_val))`` - clips the argument so the result never overflows.
 
     The default clip is ``log(finfo.max) - 1`` for the input dtype.
@@ -100,18 +102,22 @@ def stable_tanh(x: Array) -> Array:
 # Log-sum-exp family
 # ---------------------------------------------------------------------------
 
-@overload
-def logsumexp_stable(x: Array, axis: Axis = ..., keepdims: bool = ...,
-                     return_max: Literal[False] = ...) -> Array: ...
-
 
 @overload
-def logsumexp_stable(x: Array, axis: Axis = ..., keepdims: bool = ...,
-                     return_max: Literal[True] = ...) -> Tuple[Array, Array]: ...
+def logsumexp_stable(
+    x: Array, axis: Axis = ..., keepdims: bool = ..., return_max: Literal[False] = ...
+) -> Array: ...
 
 
-def logsumexp_stable(x: Array, axis: Axis = None, keepdims: bool = False,
-                     return_max: bool = False) -> Union[Array, Tuple[Array, Array]]:
+@overload
+def logsumexp_stable(
+    x: Array, axis: Axis = ..., keepdims: bool = ..., return_max: Literal[True] = ...
+) -> tuple[Array, Array]: ...
+
+
+def logsumexp_stable(
+    x: Array, axis: Axis = None, keepdims: bool = False, return_max: bool = False
+) -> Array | tuple[Array, Array]:
     """``log(sum(exp(x)))`` computed as ``m + log(sum(exp(x - m)))`` with ``m = max(x)``.
 
     Subtracting the max guarantees the largest exponent is ``exp(0) = 1``, so
@@ -176,8 +182,9 @@ def smooth_min(x: Array, axis: Axis = None, alpha: float = 1.0) -> Array:
     return -smooth_max(-x, axis=axis, alpha=alpha)
 
 
-def gumbel_softmax(logits: Array, temperature: float, key: Array,
-                   axis: int = -1, hard: bool = False) -> Array:
+def gumbel_softmax(
+    logits: Array, temperature: float, key: Array, axis: int = -1, hard: bool = False
+) -> Array:
     """Gumbel-softmax relaxation of a categorical sample.
 
     Args:
@@ -192,8 +199,9 @@ def gumbel_softmax(logits: Array, temperature: float, key: Array,
     gumbel = -jnp.log(-jnp.log(u))
     y = softmax_stable((logits + gumbel) / temperature, axis=axis)
     if hard:
-        y_hard = jax.nn.one_hot(jnp.argmax(y, axis=axis), logits.shape[axis], axis=axis,
-                                dtype=y.dtype)
+        y_hard = jax.nn.one_hot(
+            jnp.argmax(y, axis=axis), logits.shape[axis], axis=axis, dtype=y.dtype
+        )
         y = y_hard - lax.stop_gradient(y) + y
     return y
 
@@ -202,7 +210,8 @@ def gumbel_softmax(logits: Array, temperature: float, key: Array,
 # Pytree norms and clipping
 # ---------------------------------------------------------------------------
 
-def safe_norm(tree: Any, ord: Optional[Union[int, float, str]] = None) -> Array:
+
+def safe_norm(tree: Any, ord: int | float | str | None = None) -> Array:
     """Global norm over every leaf of a pytree (``ord`` in {None, 2, 'fro', 1, inf})."""
     leaves = jax.tree_util.tree_leaves(tree)
     if not leaves:
@@ -216,8 +225,9 @@ def safe_norm(tree: Any, ord: Optional[Union[int, float, str]] = None) -> Array:
     raise ValueError(f"Unsupported norm order: {ord!r}")
 
 
-def clip_gradients(grads: Any, max_norm: Optional[float] = None,
-                   max_value: Optional[float] = None) -> Any:
+def clip_gradients(
+    grads: Any, max_norm: float | None = None, max_value: float | None = None
+) -> Any:
     """Clip a gradient pytree by global norm and/or elementwise value.
 
     Global-norm clipping rescales *all* leaves by ``min(1, max_norm / ||g||)``
@@ -241,6 +251,7 @@ def clip_gradients(grads: Any, max_norm: Optional[float] = None,
 # Finite differences
 # ---------------------------------------------------------------------------
 
+
 def default_fd_step(x: Array, order: int = 2) -> float:
     """Step size that balances truncation and round-off error for ``x``'s dtype.
 
@@ -254,8 +265,7 @@ def default_fd_step(x: Array, order: int = 2) -> float:
     return (eps ** (1.0 / (order + 1))) * scale
 
 
-def numerical_gradient(fun: Callable[[Array], Array], x: Array,
-                       h: Optional[float] = None) -> Array:
+def numerical_gradient(fun: Callable[[Array], Array], x: Array, h: float | None = None) -> Array:
     """Central-difference gradient of a scalar function of one array.
 
     Args:

@@ -5,7 +5,8 @@ import jax
 import jax.numpy as jnp
 import pytest
 from jax import pmap, random
-from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
+from jax.sharding import Mesh
+from jax.sharding import PartitionSpec as P
 
 from jax_nsl.models.mlp import create_mlp
 from jax_nsl.parallel.collectives import (
@@ -100,8 +101,12 @@ class TestPmapUtils:
         init, update = sgd_optimizer(0.1)
         step = create_pmap_train_step(forward_fn, cross_entropy_loss, update)
         state = replicate_params(init(params))
-        batch = shard_batch({"inputs": random.normal(random.PRNGKey(0), (16, 4)),
-                             "labels": random.randint(random.PRNGKey(1), (16,), 0, 3)})
+        batch = shard_batch(
+            {
+                "inputs": random.normal(random.PRNGKey(0), (16, 4)),
+                "labels": random.randint(random.PRNGKey(1), (16,), 0, 3),
+            }
+        )
         state, metrics = step(state, batch)
         assert metrics["loss"].shape == (N,)
         assert int(unreplicate_params(state).step) == 1
@@ -124,8 +129,10 @@ class TestCollectives:
         assert jnp.allclose(out, jnp.vdot(x, y), rtol=1e-5)
 
     def test_sync_batch_stats_pytree(self):
-        stats = {"mean": random.normal(random.PRNGKey(0), (N, 3)),
-                 "var": random.uniform(random.PRNGKey(1), (N, 3), minval=0.1, maxval=2.0)}
+        stats = {
+            "mean": random.normal(random.PRNGKey(0), (N, 3)),
+            "var": random.uniform(random.PRNGKey(1), (N, 3), minval=0.1, maxval=2.0),
+        }
         synced = pmap(sync_batch_stats, axis_name="batch")(stats)
         assert jnp.allclose(synced["mean"][3], jnp.mean(stats["mean"], axis=0))
 
@@ -145,7 +152,7 @@ class TestCollectives:
         assert scattered.shape == (N, 3)
         total = jnp.sum(big, axis=0)
         for i in range(N):
-            assert jnp.allclose(scattered[i], total[3 * i:3 * (i + 1)], atol=1e-5)
+            assert jnp.allclose(scattered[i], total[3 * i : 3 * (i + 1)], atol=1e-5)
 
     def test_alltoall(self):
         x = jnp.arange(N * N, dtype=jnp.float32).reshape(N, N)  # device i holds row i
@@ -189,8 +196,10 @@ class TestSharding:
         assert sharded.sharding.spec == P("batch", None)
         assert len(sharded.addressable_shards) == N
         assert sharded.addressable_shards[0].data.shape == (16 // N, 4)
-        with mesh:
+        with jax.set_mesh(mesh):
             assert shard_array(x, P(None, None)).sharding.spec == P(None, None)
+        with pytest.raises(ValueError):
+            shard_array(x, P(None, None))
 
     def test_check_sharding_compatibility(self):
         mesh = create_mesh((N,), ("batch",))
@@ -199,7 +208,11 @@ class TestSharding:
 
     def test_partition_params_by_regex(self):
         mesh = create_mesh((N,), ("model",))
-        params = {"embeddings": jnp.ones((N * 4, 8)), "dense": jnp.ones((8, N * 2)), "bias": jnp.ones(N * 2)}
+        params = {
+            "embeddings": jnp.ones((N * 4, 8)),
+            "dense": jnp.ones((8, N * 2)),
+            "bias": jnp.ones(N * 2),
+        }
         rules = {r"embeddings": P("model", None), r"dense": P(None, "model")}
         specs = partition_specs(params, rules)
         assert specs["embeddings"] == P("model", None) and specs["bias"] == P()
@@ -218,7 +231,9 @@ class TestSharding:
         from jax_nsl.models.transformer import create_transformer
 
         mesh = create_mesh((N,), ("model",))
-        params, _ = create_transformer(d_model=N * 2, num_heads=2, num_layers=2, vocab_size=8, max_seq_len=4)
+        params, _ = create_transformer(
+            d_model=N * 2, num_heads=2, num_layers=2, vocab_size=8, max_seq_len=4
+        )
         specs = partition_specs(params, create_transformer_partition_specs("model"))
         assert specs["layers"]["attention"]["query"] == P(None, None, "model")
         assert specs["layers"]["ffn"]["W2"] == P(None, "model", None)
@@ -226,16 +241,23 @@ class TestSharding:
         sharded = partition_params(params, create_transformer_partition_specs("model"), mesh)
         mem = estimate_memory_per_device(params, mesh, specs)
         assert mem["memory_reduction_factor"] > 1.0
-        assert sharded["layers"]["attention"]["query"].addressable_shards[0].data.shape == (2, N * 2, 2)
+        assert sharded["layers"]["attention"]["query"].addressable_shards[0].data.shape == (
+            2,
+            N * 2,
+            2,
+        )
 
     def test_setup_model_parallelism_matches_single_device(self):
         mesh = create_mesh((2, N // 2), ("data", "model"))
         key = random.PRNGKey(0)
         x = random.normal(key, (8, 16))
         w = random.normal(key, (16, 8 * (N // 2)))
-        fn = setup_model_parallelism(lambda x, w: jax.nn.relu(x @ w), mesh,
-                                     in_specs=(P("data", None), P(None, "model")),
-                                     out_specs=P("data", "model"))
+        fn = setup_model_parallelism(
+            lambda x, w: jax.nn.relu(x @ w),
+            mesh,
+            in_specs=(P("data", None), P(None, "model")),
+            out_specs=P("data", "model"),
+        )
         out = fn(x, w)
         assert out.sharding.spec == P("data", "model")
         assert jnp.allclose(out, jax.nn.relu(x @ w), atol=1e-5)
@@ -257,14 +279,19 @@ class TestSharding:
         def loss_fn(params, batch):
             return cross_entropy_loss(forward_fn(params, batch["inputs"]), batch["labels"])
 
-        batch = {"inputs": random.normal(random.PRNGKey(0), (16, 4)),
-                 "labels": random.randint(random.PRNGKey(1), (16,), 0, 3)}
+        batch = {
+            "inputs": random.normal(random.PRNGKey(0), (16, 4)),
+            "labels": random.randint(random.PRNGKey(1), (16,), 0, 3),
+        }
         param_specs = jax.tree_util.tree_map(lambda _: P(), params)
-        step = make_sharded_train_step(loss_fn, update, mesh, param_specs,
-                                       {"inputs": P("data", None), "labels": P("data")})
+        step = make_sharded_train_step(
+            loss_fn, update, mesh, param_specs, {"inputs": P("data", None), "labels": P("data")}
+        )
         new_state, loss = step(init(params), batch)
         ref = update(init(params), jax.grad(loss_fn)(params, batch))
-        for a, b in zip(jax.tree_util.tree_leaves(new_state.params), jax.tree_util.tree_leaves(ref.params)):
+        for a, b in zip(
+            jax.tree_util.tree_leaves(new_state.params), jax.tree_util.tree_leaves(ref.params)
+        ):
             assert jnp.allclose(a, b, atol=1e-5)
         assert jnp.allclose(loss, loss_fn(params, batch), atol=1e-5)
 

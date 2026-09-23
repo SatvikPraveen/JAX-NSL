@@ -85,10 +85,15 @@ class TestLosses:
     def test_focal_loss_reduces_to_ce_when_gamma_zero(self):
         logits = random.normal(random.PRNGKey(0), (8, 3))
         labels = random.randint(random.PRNGKey(1), (8,), 0, 3)
-        assert jnp.allclose(focal_loss(logits, labels, alpha=1.0, gamma=0.0),
-                            cross_entropy_loss(logits, labels), atol=1e-6)
+        assert jnp.allclose(
+            focal_loss(logits, labels, alpha=1.0, gamma=0.0),
+            cross_entropy_loss(logits, labels),
+            atol=1e-6,
+        )
         confident = jnp.array([[10.0, 0.0, 0.0]])
-        assert focal_loss(confident, jnp.array([0]), gamma=2.0) < cross_entropy_loss(confident, jnp.array([0]))
+        assert focal_loss(confident, jnp.array([0]), gamma=2.0) < cross_entropy_loss(
+            confident, jnp.array([0])
+        )
 
     def test_kl_divergence(self):
         logits = jnp.array([1.0, 2.0, 3.0])
@@ -120,11 +125,18 @@ def _quadratic_problem():
 
 
 class TestOptimizers:
-    @pytest.mark.parametrize("factory", [
-        lambda: sgd_optimizer(0.1), lambda: momentum_optimizer(0.05, nesterov=True),
-        lambda: adam_optimizer(0.1), lambda: adamw_optimizer(0.1, weight_decay=0.0),
-        lambda: rmsprop_optimizer(0.05), lambda: adagrad_optimizer(0.5), lambda: lion_optimizer(0.02),
-    ])
+    @pytest.mark.parametrize(
+        "factory",
+        [
+            lambda: sgd_optimizer(0.1),
+            lambda: momentum_optimizer(0.05, nesterov=True),
+            lambda: adam_optimizer(0.1),
+            lambda: adamw_optimizer(0.1, weight_decay=0.0),
+            lambda: rmsprop_optimizer(0.05),
+            lambda: adagrad_optimizer(0.5),
+            lambda: lion_optimizer(0.02),
+        ],
+    )
     def test_all_optimizers_decrease_loss_under_jit(self, factory):
         params, loss = _quadratic_problem()
         init, update = factory()
@@ -169,18 +181,26 @@ class TestOptimizers:
 
 
 class TestSchedules:
-    @pytest.mark.parametrize("schedule", ["constant", "cosine", "linear", "exponential", "step", "warmup_cosine"])
+    @pytest.mark.parametrize(
+        "schedule", ["constant", "cosine", "linear", "exponential", "step", "warmup_cosine"]
+    )
     def test_schedules_positive_and_jittable(self, schedule):
-        lr_fn = create_learning_rate_schedule(schedule, base_lr=0.1, total_steps=100, warmup_steps=10,
-                                              final_lr=0.01)
+        lr_fn = create_learning_rate_schedule(
+            schedule, base_lr=0.1, total_steps=100, warmup_steps=10, final_lr=0.01
+        )
         for step in [0, 5, 50, 99, 150]:
             assert float(jax.jit(lr_fn)(jnp.int32(step))) >= 0.0
         assert jnp.allclose(get_learning_rate(lr_fn, 50), lr_fn(50))
 
     def test_warmup_cosine_shape(self):
-        lr_fn = create_learning_rate_schedule("warmup_cosine", base_lr=1.0, warmup_steps=10,
-                                              total_steps=110, final_lr=0.0)
-        assert jnp.allclose(lr_fn(0), 0.0) and jnp.allclose(lr_fn(5), 0.5) and jnp.allclose(lr_fn(10), 1.0)
+        lr_fn = create_learning_rate_schedule(
+            "warmup_cosine", base_lr=1.0, warmup_steps=10, total_steps=110, final_lr=0.0
+        )
+        assert (
+            jnp.allclose(lr_fn(0), 0.0)
+            and jnp.allclose(lr_fn(5), 0.5)
+            and jnp.allclose(lr_fn(10), 1.0)
+        )
         assert jnp.allclose(lr_fn(60), 0.5, atol=1e-6) and jnp.allclose(lr_fn(110), 0.0, atol=1e-6)
 
 
@@ -226,8 +246,15 @@ class TestTrainLoop:
         state, metrics = train_epoch(state, [batch, batch], step)
         assert set(metrics) == {"loss", "accuracy"}
         logs = []
-        state = training_loop(state, lambda: [batch], lambda: [batch], step, eval_step, num_epochs=2,
-                              log_fn=lambda e, m: logs.append(m))
+        state = training_loop(
+            state,
+            lambda: [batch],
+            lambda: [batch],
+            step,
+            eval_step,
+            num_epochs=2,
+            log_fn=lambda e, m: logs.append(m),
+        )
         assert len(logs) == 2 and "val_loss" in logs[0] and "train_loss" in logs[0]
 
     def test_gradient_accumulation_equals_full_batch(self):
@@ -239,7 +266,9 @@ class TestTrainLoop:
         full_loss, full_grads = jax.value_and_grad(loss)(params, batch)
         acc_loss, acc_grads = accumulate_gradients(loss, params, split_into_microbatches(batch, 4))
         assert jnp.allclose(full_loss, acc_loss, atol=1e-6)
-        for a, b in zip(jax.tree_util.tree_leaves(full_grads), jax.tree_util.tree_leaves(acc_grads)):
+        for a, b in zip(
+            jax.tree_util.tree_leaves(full_grads), jax.tree_util.tree_leaves(acc_grads)
+        ):
             assert jnp.allclose(a, b, atol=1e-6)
 
     def test_accumulating_train_step_matches_plain_step(self):
@@ -247,7 +276,9 @@ class TestTrainLoop:
         init, update = sgd_optimizer(0.1)
         s0 = create_train_state(params, init, random.PRNGKey(0))
         plain = make_train_step(forward_fn, cross_entropy_loss, update)
-        accum = make_accumulating_train_step(forward_fn, cross_entropy_loss, update, num_microbatches=4)
+        accum = make_accumulating_train_step(
+            forward_fn, cross_entropy_loss, update, num_microbatches=4
+        )
         s1, _ = plain(s0, batch)
         s2, _ = accum(s0, batch)
         for a, b in zip(jax.tree_util.tree_leaves(s1.params), jax.tree_util.tree_leaves(s2.params)):
@@ -276,7 +307,9 @@ class TestTrainLoop:
         restored = load_checkpoint(path)
         assert int(restored.step) == 1
         assert jax.dtypes.issubdtype(restored.rng.dtype, jax.dtypes.prng_key)
-        for a, b in zip(jax.tree_util.tree_leaves(state.params), jax.tree_util.tree_leaves(restored.params)):
+        for a, b in zip(
+            jax.tree_util.tree_leaves(state.params), jax.tree_util.tree_leaves(restored.params)
+        ):
             assert jnp.array_equal(a, b)
         # Training can continue from the restored state.
         step(restored, batch)

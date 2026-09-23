@@ -16,7 +16,8 @@ fuses with ``jit``.  Two patterns deserve names:
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, Optional, Sequence, Tuple, Union
+from collections.abc import Callable, Sequence
+from typing import Any
 
 import jax
 import jax.numpy as jnp
@@ -25,8 +26,13 @@ from jax import lax, vmap
 Array = jax.Array
 
 
-def batch_apply(fun: Callable, in_axes: Any = 0, out_axes: Any = 0,
-                axis_name: Optional[str] = None, axis_size: Optional[int] = None) -> Callable:
+def batch_apply(
+    fun: Callable,
+    in_axes: Any = 0,
+    out_axes: Any = 0,
+    axis_name: str | None = None,
+    axis_size: int | None = None,
+) -> Callable:
     """``vmap`` with keyword defaults (identical semantics to :func:`jax.vmap`)."""
     return vmap(fun, in_axes=in_axes, out_axes=out_axes, axis_name=axis_name, axis_size=axis_size)
 
@@ -64,8 +70,12 @@ def batch_solve(a: Array, b: Array) -> Array:
 def batch_matrix_ops(matrices: Array, operation: str = "inv", **kwargs) -> Any:
     """Apply a ``jnp.linalg`` routine to each matrix in a batch."""
     ops = {
-        "inv": jnp.linalg.inv, "det": jnp.linalg.det, "eig": jnp.linalg.eig,
-        "eigvals": jnp.linalg.eigvals, "cholesky": jnp.linalg.cholesky, "qr": jnp.linalg.qr,
+        "inv": jnp.linalg.inv,
+        "det": jnp.linalg.det,
+        "eig": jnp.linalg.eig,
+        "eigvals": jnp.linalg.eigvals,
+        "cholesky": jnp.linalg.cholesky,
+        "qr": jnp.linalg.qr,
         "svd": lambda m: jnp.linalg.svd(m, full_matrices=kwargs.get("full_matrices", True)),
     }
     if operation not in ops:
@@ -82,14 +92,18 @@ def batch_apply_along_axis(fun: Callable, axis: int, arr: Array, keepdims: bool 
     return result
 
 
-def nested_vmap(fun: Callable, in_axes_list: Sequence[Any], out_axes_list: Sequence[Any]) -> Callable:
+def nested_vmap(
+    fun: Callable, in_axes_list: Sequence[Any], out_axes_list: Sequence[Any]
+) -> Callable:
     """Compose several ``vmap`` levels, innermost first."""
     for in_axes, out_axes in zip(reversed(in_axes_list), reversed(out_axes_list)):
         fun = vmap(fun, in_axes=in_axes, out_axes=out_axes)
     return fun
 
 
-def selective_vmap(fun: Callable, condition_fn: Callable, in_axes: Any = 0, out_axes: Any = 0) -> Callable:
+def selective_vmap(
+    fun: Callable, condition_fn: Callable, in_axes: Any = 0, out_axes: Any = 0
+) -> Callable:
     """Use the ``vmap``-ed version only when ``condition_fn(*args)`` is true (a Python-level check)."""
     vmapped = vmap(fun, in_axes=in_axes, out_axes=out_axes)
 
@@ -112,12 +126,13 @@ def vmap_with_signature(signature: str) -> Callable:
 # Gradients over batches
 # ---------------------------------------------------------------------------
 
-def batch_gradient(fun: Callable, argnums: Union[int, Tuple[int, ...]] = 0) -> Callable:
+
+def batch_gradient(fun: Callable, argnums: int | tuple[int, ...] = 0) -> Callable:
     """``vmap(grad(fun))`` - gradient of a per-example scalar function for every example."""
     return vmap(jax.grad(fun, argnums=argnums))
 
 
-def batch_jacobian(fun: Callable, argnums: Union[int, Tuple[int, ...]] = 0) -> Callable:
+def batch_jacobian(fun: Callable, argnums: int | tuple[int, ...] = 0) -> Callable:
     """``vmap(jacobian(fun))``."""
     return vmap(jax.jacobian(fun, argnums=argnums))
 
@@ -128,8 +143,9 @@ def batched_gradient(fun: Callable, xs: Array, *rest) -> Array:
     return vmap(jax.grad(fun), in_axes=in_axes)(xs, *rest)
 
 
-def per_example_gradients(loss_fn: Callable[[Any, Any, Any], Array], params: Any,
-                          inputs: Any, targets: Any) -> Any:
+def per_example_gradients(
+    loss_fn: Callable[[Any, Any, Any], Array], params: Any, inputs: Any, targets: Any
+) -> Any:
     """Gradient of ``loss_fn(params, x_i, y_i)`` for each example ``i``.
 
     The returned pytree has the structure of ``params`` with a leading batch
@@ -141,6 +157,7 @@ def per_example_gradients(loss_fn: Callable[[Any, Any, Any], Array], params: Any
 
 def clip_per_example_gradients(per_example_grads: Any, max_norm: float) -> Any:
     """Clip each example's gradient (across all leaves) to ``max_norm``, then return the mean."""
+
     def example_norm_sq(*leaves):
         return sum(jnp.sum(jnp.square(leaf.reshape(leaf.shape[0], -1)), axis=1) for leaf in leaves)
 
@@ -158,6 +175,7 @@ def clip_per_example_gradients(per_example_grads: Any, max_norm: float) -> Any:
 # ---------------------------------------------------------------------------
 # Memory-bounded batching
 # ---------------------------------------------------------------------------
+
 
 def chunked_vmap(fun: Callable, xs: Array, chunk_size: int) -> Array:
     """``vmap(fun)`` applied ``chunk_size`` examples at a time with ``lax.map``.
@@ -178,7 +196,7 @@ def chunked_vmap(fun: Callable, xs: Array, chunk_size: int) -> Array:
     return out[:n]
 
 
-def parallel_map(fun: Callable, xs: Array, chunk_size: Optional[int] = None) -> Array:
+def parallel_map(fun: Callable, xs: Array, chunk_size: int | None = None) -> Array:
     """``vmap(fun)(xs)``, or :func:`chunked_vmap` when ``chunk_size`` is given."""
     if chunk_size is None:
         return vmap(fun)(xs)

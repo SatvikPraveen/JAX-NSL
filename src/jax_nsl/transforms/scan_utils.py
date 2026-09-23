@@ -13,7 +13,8 @@ sums, linear recurrences) ``lax.associative_scan`` evaluates it in
 
 from __future__ import annotations
 
-from typing import Any, Callable, List, Optional, Sequence, Tuple
+from collections.abc import Callable, Sequence
+from typing import Any
 
 import jax
 import jax.numpy as jnp
@@ -26,8 +27,14 @@ Array = jax.Array
 # Cumulative operations
 # ---------------------------------------------------------------------------
 
-def cumulative_op(op: Callable[[Array, Array], Array], xs: Array, init: Optional[Array] = None,
-                  axis: int = 0, reverse: bool = False) -> Array:
+
+def cumulative_op(
+    op: Callable[[Array, Array], Array],
+    xs: Array,
+    init: Array | None = None,
+    axis: int = 0,
+    reverse: bool = False,
+) -> Array:
     """Inclusive cumulative ``op`` along ``axis`` using ``scan``.
 
     With ``init=None`` the first output equals the first element, so the
@@ -73,6 +80,7 @@ def linear_recurrence(a: Array, b: Array) -> Array:
     parallel training of linear RNNs / state-space models (S4, S5, Mamba).
     Broadcasting over trailing dimensions is supported.
     """
+
     def combine(left, right):
         a_l, b_l = left
         a_r, b_r = right
@@ -82,7 +90,7 @@ def linear_recurrence(a: Array, b: Array) -> Array:
     return x
 
 
-def running_statistics(xs: Array, axis: int = 0) -> Tuple[Array, Array]:
+def running_statistics(xs: Array, axis: int = 0) -> tuple[Array, Array]:
     """Running mean and (unbiased) variance via Welford's online algorithm.
 
     Welford's update avoids the catastrophic cancellation of the naive
@@ -108,8 +116,10 @@ def running_statistics(xs: Array, axis: int = 0) -> Tuple[Array, Array]:
 # Sequential application
 # ---------------------------------------------------------------------------
 
-def sequential_apply(funs: Sequence[Callable], init_state: Any,
-                     inputs: Optional[Sequence[Any]] = None) -> Tuple[Any, List[Any]]:
+
+def sequential_apply(
+    funs: Sequence[Callable], init_state: Any, inputs: Sequence[Any] | None = None
+) -> tuple[Any, list[Any]]:
     """Apply *different* functions in sequence: ``state, out = fun_i(state[, x_i])``.
 
     Heterogeneous Python callables cannot be scanned (they are not arrays),
@@ -125,8 +135,9 @@ def sequential_apply(funs: Sequence[Callable], init_state: Any,
     return state, outputs
 
 
-def scan_layers(layer_fn: Callable[[Any, Any], Any], stacked_params: Any, x: Any,
-                remat: bool = False) -> Any:
+def scan_layers(
+    layer_fn: Callable[[Any, Any], Any], stacked_params: Any, x: Any, remat: bool = False
+) -> Any:
     """Apply one layer function with ``L`` stacked parameter sets: ``x = layer(p_i, x)``.
 
     Stacking per-layer parameters along a leading axis and scanning over them
@@ -151,8 +162,13 @@ def stack_params(param_list: Sequence[Any]) -> Any:
     return jax.tree_util.tree_map(lambda *leaves: jnp.stack(leaves), *param_list)
 
 
-def rnn_scan(rnn_cell: Callable[[Any, Any], Tuple[Any, Any]], init_state: Any, inputs: Array,
-             reverse: bool = False, unroll: int = 1) -> Tuple[Any, Array]:
+def rnn_scan(
+    rnn_cell: Callable[[Any, Any], tuple[Any, Any]],
+    init_state: Any,
+    inputs: Array,
+    reverse: bool = False,
+    unroll: int = 1,
+) -> tuple[Any, Array]:
     """Run ``state, out = rnn_cell(state, x_t)`` over ``inputs`` (time-major).
 
     Args:
@@ -165,16 +181,18 @@ def rnn_scan(rnn_cell: Callable[[Any, Any], Tuple[Any, Any]], init_state: Any, i
     return lax.scan(rnn_cell, init_state, inputs, reverse=reverse, unroll=unroll)
 
 
-def bidirectional_rnn_scan(cell_fwd: Callable, cell_bwd: Callable, init_fwd: Any, init_bwd: Any,
-                           inputs: Array) -> Tuple[Tuple[Any, Any], Array]:
+def bidirectional_rnn_scan(
+    cell_fwd: Callable, cell_bwd: Callable, init_fwd: Any, init_bwd: Any, inputs: Array
+) -> tuple[tuple[Any, Any], Array]:
     """Forward and backward scans with outputs concatenated on the last axis."""
     sf, of = lax.scan(cell_fwd, init_fwd, inputs)
     sb, ob = lax.scan(cell_bwd, init_bwd, inputs, reverse=True)
     return (sf, sb), jnp.concatenate([of, ob], axis=-1)
 
 
-def dynamic_rnn(cell: Callable, inputs: Array, sequence_lengths: Array, init_state: Any,
-                time_major: bool = True) -> Tuple[Any, Array]:
+def dynamic_rnn(
+    cell: Callable, inputs: Array, sequence_lengths: Array, init_state: Any, time_major: bool = True
+) -> tuple[Any, Array]:
     """RNN over padded batches: state and outputs freeze once ``t >= length``.
 
     Args:
@@ -195,7 +213,8 @@ def dynamic_rnn(cell: Callable, inputs: Array, sequence_lengths: Array, init_sta
         active = t < sequence_lengths
         new_state, out = cell(state, x)
         new_state = jax.tree_util.tree_map(
-            lambda n, o: jnp.where(broadcast_mask(active, n), n, o), new_state, state)
+            lambda n, o: jnp.where(broadcast_mask(active, n), n, o), new_state, state
+        )
         out = jnp.where(broadcast_mask(active, out), out, jnp.zeros_like(out))
         return new_state, out
 
@@ -205,8 +224,9 @@ def dynamic_rnn(cell: Callable, inputs: Array, sequence_lengths: Array, init_sta
     return final_state, outputs
 
 
-def windowed_scan(fun: Callable, inputs: Array, window_size: int, stride: int = 1,
-                  init: Optional[Any] = None) -> Tuple[Any, Array]:
+def windowed_scan(
+    fun: Callable, inputs: Array, window_size: int, stride: int = 1, init: Any | None = None
+) -> tuple[Any, Array]:
     """Apply ``fun`` to sliding windows of ``inputs`` (leading axis) with ``scan``."""
     num_windows = (inputs.shape[0] - window_size) // stride + 1
     idx = jnp.arange(window_size)[None, :] + jnp.arange(num_windows)[:, None] * stride
@@ -220,6 +240,7 @@ def windowed_scan(fun: Callable, inputs: Array, window_size: int, stride: int = 
 # ---------------------------------------------------------------------------
 # ODE integration
 # ---------------------------------------------------------------------------
+
 
 def _euler(f, y, t, dt):
     return y + dt * f(y, t)
@@ -241,8 +262,9 @@ def _rk4(f, y, t, dt):
 _STEPPERS = {"euler": _euler, "midpoint": _midpoint, "rk4": _rk4}
 
 
-def ode_solve_scan(ode_fn: Callable[[Any, Array], Any], y0: Any, t: Array,
-                   method: str = "rk4") -> Any:
+def ode_solve_scan(
+    ode_fn: Callable[[Any, Array], Any], y0: Any, t: Array, method: str = "rk4"
+) -> Any:
     """Fixed-grid explicit integration of ``dy/dt = ode_fn(y, t)`` on the time points ``t``.
 
     Returns the trajectory including ``y0`` (leading axis = time).  Because
@@ -264,7 +286,9 @@ def ode_solve_scan(ode_fn: Callable[[Any, Array], Any], y0: Any, t: Array,
         return y_next, y_next
 
     _, trajectory = lax.scan(step, y0, (t[:-1], t[1:]))
-    return jax.tree_util.tree_map(lambda a, tr: jnp.concatenate([a[None], tr], axis=0), y0, trajectory)
+    return jax.tree_util.tree_map(
+        lambda a, tr: jnp.concatenate([a[None], tr], axis=0), y0, trajectory
+    )
 
 
 solve_ode = ode_solve_scan
@@ -274,8 +298,10 @@ solve_ode = ode_solve_scan
 # Rematerialisation
 # ---------------------------------------------------------------------------
 
-def scan_with_checkpointing(fun: Callable, init: Any, xs: Array, checkpoint_every: int = 1,
-                            policy: Optional[Callable] = None) -> Tuple[Any, Array]:
+
+def scan_with_checkpointing(
+    fun: Callable, init: Any, xs: Array, checkpoint_every: int = 1, policy: Callable | None = None
+) -> tuple[Any, Array]:
     """``scan`` that only stores one carry per ``checkpoint_every`` steps for the backward pass.
 
     The sequence is split into chunks; each chunk is scanned inside
@@ -303,15 +329,19 @@ def scan_with_checkpointing(fun: Callable, init: Any, xs: Array, checkpoint_ever
     def chunk_scan(carry, chunk):
         return lax.scan(fun, carry, chunk)
 
-    remat_chunk = jax.checkpoint(chunk_scan, policy=policy) if policy else jax.checkpoint(chunk_scan)
+    remat_chunk = (
+        jax.checkpoint(chunk_scan, policy=policy) if policy else jax.checkpoint(chunk_scan)
+    )
 
     carry = init
     outputs = []
     if num_full > 0:
-        main = xs[: num_full * checkpoint_every].reshape((num_full, checkpoint_every) + xs.shape[1:])
+        main = xs[: num_full * checkpoint_every].reshape(
+            (num_full, checkpoint_every) + xs.shape[1:]
+        )
         carry, ys = lax.scan(remat_chunk, carry, main)
         outputs.append(ys.reshape((num_full * checkpoint_every,) + ys.shape[2:]))
     if remainder > 0:
-        carry, ys = lax.scan(fun, carry, xs[num_full * checkpoint_every:])
+        carry, ys = lax.scan(fun, carry, xs[num_full * checkpoint_every :])
         outputs.append(ys)
     return carry, jnp.concatenate(outputs, axis=0)

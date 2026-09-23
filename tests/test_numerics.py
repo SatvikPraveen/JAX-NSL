@@ -134,8 +134,9 @@ class TestLinearSolverStability:
         a = jnp.array([[1e6, 0.0], [0.0, 1e-6]])
         b = jnp.array([1.0, 1.0])
         x_plain, _ = conjugate_gradient(a, b, tolerance=1e-3, max_iterations=100)
-        x_pcg, info = conjugate_gradient(a, b, tolerance=1e-3, max_iterations=100,
-                                         preconditioner=1.0 / jnp.diag(a))
+        x_pcg, info = conjugate_gradient(
+            a, b, tolerance=1e-3, max_iterations=100, preconditioner=1.0 / jnp.diag(a)
+        )
         rel = lambda x: jnp.linalg.norm(a @ x - b) / jnp.linalg.norm(b)  # noqa: E731
         assert rel(x_pcg) < 1e-3
         assert rel(x_pcg) <= rel(x_plain)
@@ -148,8 +149,7 @@ class TestLinearSolverStability:
         def quadratic(x):
             return 0.5 * x @ a @ x - b @ x
 
-        x_opt, _ = gradient_descent(quadratic, jnp.zeros(2), learning_rate=0.1,
-                                    max_iterations=200)
+        x_opt, _ = gradient_descent(quadratic, jnp.zeros(2), learning_rate=0.1, max_iterations=200)
         assert jnp.allclose(x_opt, jnp.linalg.solve(a, b), atol=1e-3)
 
 
@@ -165,8 +165,9 @@ class TestNumericalEdgeCases:
     def test_softmax_matches_across_precisions(self):
         x_f32 = jnp.array([1.0, 2.0, 3.0], dtype=jnp.float32)
         x_f16 = x_f32.astype(jnp.float16)
-        assert jnp.allclose(stable_softmax(x_f32 * 100), stable_softmax(x_f16 * 100).astype(jnp.float32),
-                            atol=1e-3)
+        assert jnp.allclose(
+            stable_softmax(x_f32 * 100), stable_softmax(x_f16 * 100).astype(jnp.float32), atol=1e-3
+        )
 
     def test_gradient_explosion_prevention(self):
         def unstable(x):

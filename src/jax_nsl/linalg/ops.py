@@ -13,8 +13,6 @@ Notes on JAX linear algebra:
 
 from __future__ import annotations
 
-from typing import Optional, Tuple, Union
-
 import jax
 import jax.numpy as jnp
 from jax import lax
@@ -22,8 +20,9 @@ from jax import lax
 Array = jax.Array
 
 
-def safe_matmul(a: Array, b: Array, precision: Optional[lax.Precision] = None,
-                check_shapes: bool = True) -> Array:
+def safe_matmul(
+    a: Array, b: Array, precision: lax.Precision | None = None, check_shapes: bool = True
+) -> Array:
     """``a @ b`` with eager shape validation and an explicit precision setting."""
     if check_shapes:
         if a.ndim < 2 or b.ndim < 2:
@@ -47,8 +46,10 @@ def einsum_path_optimize(subscripts: str, *operands: Array, optimize: str = "opt
 # Decompositions
 # ---------------------------------------------------------------------------
 
-def stable_svd(matrix: Array, full_matrices: bool = True, compute_uv: bool = True,
-               hermitian: bool = False) -> Union[Array, Tuple[Array, Array, Array]]:
+
+def stable_svd(
+    matrix: Array, full_matrices: bool = True, compute_uv: bool = True, hermitian: bool = False
+) -> Array | tuple[Array, Array, Array]:
     """SVD with singular values clamped to be non-negative (round-off can give -1e-8)."""
     if compute_uv:
         u, s, vt = jnp.linalg.svd(matrix, full_matrices=full_matrices, hermitian=hermitian)
@@ -56,8 +57,9 @@ def stable_svd(matrix: Array, full_matrices: bool = True, compute_uv: bool = Tru
     return jnp.maximum(jnp.linalg.svd(matrix, compute_uv=False, hermitian=hermitian), 0.0)
 
 
-def stable_eigh(matrix: Array, UPLO: str = "L", symmetrize_input: bool = True
-                ) -> Tuple[Array, Array]:
+def stable_eigh(
+    matrix: Array, UPLO: str = "L", symmetrize_input: bool = True
+) -> tuple[Array, Array]:
     """Eigendecomposition of a Hermitian matrix, eigenvalues in ascending order.
 
     ``eigh`` only reads one triangle, so a slightly asymmetric input (from
@@ -69,7 +71,7 @@ def stable_eigh(matrix: Array, UPLO: str = "L", symmetrize_input: bool = True
     return jnp.linalg.eigh(matrix, UPLO=UPLO)
 
 
-def qr_decomposition(matrix: Array, mode: str = "reduced") -> Union[Array, Tuple[Array, Array]]:
+def qr_decomposition(matrix: Array, mode: str = "reduced") -> Array | tuple[Array, Array]:
     """Householder QR; ``mode`` in ``{'reduced', 'complete', 'r'}``."""
     return jnp.linalg.qr(matrix, mode=mode)
 
@@ -116,8 +118,9 @@ def matrix_logarithm(matrix: Array) -> Array:
     return (v * log_w) @ v.T
 
 
-def pseudoinverse_stable(matrix: Array, rcond: Optional[float] = None,
-                         hermitian: bool = False) -> Array:
+def pseudoinverse_stable(
+    matrix: Array, rcond: float | None = None, hermitian: bool = False
+) -> Array:
     """Moore-Penrose pseudoinverse with an explicit singular-value cutoff."""
     if rcond is None:
         rcond = max(matrix.shape[-2:]) * float(jnp.finfo(matrix.dtype).eps)
@@ -156,19 +159,20 @@ def gram_schmidt(vectors: Array, normalize: bool = True) -> Array:
 # Norms and conditioning
 # ---------------------------------------------------------------------------
 
+
 def trace_product(a: Array, b: Array) -> Array:
     """``trace(a @ b)`` without forming the product: ``sum(a * b.T)``."""
     return jnp.sum(a * jnp.swapaxes(b, -1, -2))
 
 
-def frobenius_norm(matrix: Array, axis: Optional[Tuple[int, int]] = None) -> Array:
+def frobenius_norm(matrix: Array, axis: tuple[int, int] | None = None) -> Array:
     """Frobenius norm over the last two axes (or the given pair)."""
     if axis is None:
         axis = (-2, -1)
     return jnp.sqrt(jnp.sum(jnp.abs(matrix) ** 2, axis=axis))
 
 
-def spectral_norm(matrix: Array, max_iterations: int = 50, v0: Optional[Array] = None) -> Array:
+def spectral_norm(matrix: Array, max_iterations: int = 50, v0: Array | None = None) -> Array:
     """Largest singular value by power iteration on ``A^T A``.
 
     Each iteration multiplies by ``A`` and ``A^T``; the estimate converges as
@@ -192,6 +196,6 @@ def spectral_norm(matrix: Array, max_iterations: int = 50, v0: Optional[Array] =
     return sigma
 
 
-def condition_number(matrix: Array, p: Optional[Union[int, str]] = None) -> Array:
+def condition_number(matrix: Array, p: int | str | None = None) -> Array:
     """``kappa_p(A) = ||A||_p ||A^{-1}||_p`` (2-norm by default, via the SVD)."""
     return jnp.linalg.cond(matrix, p=p)

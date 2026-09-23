@@ -192,7 +192,9 @@ class TestCustomVJP:
         ref_swish = grad(lambda x: jnp.sum(x * jax.nn.sigmoid(x)))(x)
         assert jnp.allclose(grad(lambda x: jnp.sum(swish_vjp(x)))(x), ref_swish, atol=1e-6)
         ref_glu = grad(lambda x: jnp.sum(jax.nn.glu(x)))(x)
-        assert jnp.allclose(grad(lambda x: jnp.sum(gated_linear_unit_vjp(x)))(x), ref_glu, atol=1e-6)
+        assert jnp.allclose(
+            grad(lambda x: jnp.sum(gated_linear_unit_vjp(x)))(x), ref_glu, atol=1e-6
+        )
 
 
 class TestCustomJVP:
@@ -207,10 +209,13 @@ class TestCustomJVP:
         primals, tangents = jvp(lambda x: smooth_abs_jvp(x, eps=1e-2), (x,), (v,))
         assert jnp.all(jnp.isfinite(primals)) and jnp.all(jnp.isfinite(tangents))
 
-    @pytest.mark.parametrize("fn,ref", [
-        (soft_sign_jvp, lambda x: x / (1.0 + jnp.abs(x))),
-        (gaussian_activation_jvp, lambda x: jnp.exp(-x**2 / 2)),
-    ])
+    @pytest.mark.parametrize(
+        "fn,ref",
+        [
+            (soft_sign_jvp, lambda x: x / (1.0 + jnp.abs(x))),
+            (gaussian_activation_jvp, lambda x: jnp.exp(-(x**2) / 2)),
+        ],
+    )
     def test_jvp_rules_match_autodiff(self, fn, ref):
         x = jnp.array([-2.0, -0.5, 0.5, 2.0])
         v = jnp.ones(4)

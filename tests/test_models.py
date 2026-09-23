@@ -61,7 +61,9 @@ class TestMLP:
     def test_forward_output_shape(self):
         params = init_mlp_params(random.PRNGKey(0), [4, 8, 3])
         assert mlp_forward(params, jnp.ones((16, 4))).shape == (16, 3)
-        assert jnp.allclose(mlp_predict(params, jnp.ones((8, 4))), mlp_forward(params, jnp.ones((8, 4))))
+        assert jnp.allclose(
+            mlp_predict(params, jnp.ones((8, 4))), mlp_forward(params, jnp.ones((8, 4)))
+        )
 
     def test_differentiable_and_jittable(self):
         params = init_mlp_params(random.PRNGKey(0), [4, 8, 2])
@@ -74,7 +76,9 @@ class TestMLP:
         assert grads["weights"][0].shape == params["weights"][0].shape
         assert jnp.any(grads["weights"][0] != 0)
 
-    @pytest.mark.parametrize("act", ["relu", "tanh", "sigmoid", "gelu", "swish", "selu", "softplus"])
+    @pytest.mark.parametrize(
+        "act", ["relu", "tanh", "sigmoid", "gelu", "swish", "selu", "softplus"]
+    )
     def test_activations(self, act):
         x = jnp.linspace(-2, 2, 10)
         out = activation_fn(x, act)
@@ -97,7 +101,9 @@ class TestMLP:
         params = init_mlp_params(random.PRNGKey(0), [4, 64, 2])
         x = jnp.ones((3, 4))
         key = random.PRNGKey(1)
-        assert jnp.allclose(mlp_with_dropout(params, x, key, 0.5, training=False), mlp_forward(params, x))
+        assert jnp.allclose(
+            mlp_with_dropout(params, x, key, 0.5, training=False), mlp_forward(params, x)
+        )
         a = mlp_with_dropout(params, x, key, 0.5, training=True)
         b = mlp_with_dropout(params, x, random.PRNGKey(2), 0.5, training=True)
         assert not jnp.allclose(a, b)
@@ -134,8 +140,12 @@ class TestCNN:
     def test_conv_matches_manual_cross_correlation(self):
         x = random.normal(random.PRNGKey(0), (1, 5, 5, 1))
         w = random.normal(random.PRNGKey(1), (1, 1, 3, 3))
-        out = conv2d_layer(x, {"weights": w, "biases": jnp.zeros(1)}, padding="VALID", activation="linear")
-        manual = sum(x[0, i:i + 3, j:j + 3, 0].ravel() @ w[0, 0].ravel() for i in [0] for j in [0])
+        out = conv2d_layer(
+            x, {"weights": w, "biases": jnp.zeros(1)}, padding="VALID", activation="linear"
+        )
+        manual = sum(
+            x[0, i : i + 3, j : j + 3, 0].ravel() @ w[0, 0].ravel() for i in [0] for j in [0]
+        )
         assert jnp.allclose(out[0, 0, 0, 0], manual, atol=1e-5)
 
     def test_pooling(self):
@@ -165,7 +175,9 @@ class TestCNN:
         assert residual_block(x, p1, p2).shape == x.shape
 
     def test_create_cnn_infers_flatten_size(self):
-        params, fwd = create_cnn((16, 16, 3), conv_channels=[4, 8], dense_layers=[16], num_classes=5)
+        params, fwd = create_cnn(
+            (16, 16, 3), conv_channels=[4, 8], dense_layers=[16], num_classes=5
+        )
         # two 2x2 pools: 16 -> 8 -> 4, times 8 channels
         assert params["dense_layers"][0]["weights"].shape == (4 * 4 * 8, 16)
         logits = jax.jit(fwd)(params, jnp.ones((2, 16, 16, 3)))
@@ -222,8 +234,12 @@ class TestTransformer:
     def test_feed_forward_shape(self):
         x = random.normal(random.PRNGKey(0), (4, 16))
         k1, k2 = random.split(random.PRNGKey(0))
-        ff = {"W1": random.normal(k1, (16, 32)), "b1": jnp.zeros(32),
-              "W2": random.normal(k2, (32, 16)), "b2": jnp.zeros(16)}
+        ff = {
+            "W1": random.normal(k1, (16, 32)),
+            "b1": jnp.zeros(32),
+            "W2": random.normal(k2, (32, 16)),
+            "b2": jnp.zeros(16),
+        }
         assert feed_forward_network(x, ff).shape == (4, 16)
 
     def test_positional_encoding_properties(self):
@@ -253,7 +269,9 @@ class TestTransformer:
 
     @pytest.mark.parametrize("remat", [False, True])
     def test_create_transformer_scan_matches_loop(self, remat):
-        params, fwd = create_transformer(16, 4, num_layers=3, vocab_size=20, max_seq_len=8, remat=remat)
+        params, fwd = create_transformer(
+            16, 4, num_layers=3, vocab_size=20, max_seq_len=8, remat=remat
+        )
         assert params["layers"]["attention"]["query"].shape == (3, 16, 16)
         tokens = random.randint(random.PRNGKey(0), (2, 6), 0, 20)
         out = jax.jit(fwd)(params, tokens, mask=create_causal_mask(6))

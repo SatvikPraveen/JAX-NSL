@@ -36,6 +36,9 @@ dependencies = [
 [project.optional-dependencies]
 notebook = [
     "jupyter>=1.0.0",
+    "optax>=0.2.0",
+    "nbconvert>=7.0.0",
+    "ipykernel>=6.0.0",
     "matplotlib>=3.5.0",
     "seaborn>=0.11.0",
     "plotly>=5.0.0",
@@ -68,7 +71,7 @@ where = ["src"]
 
 [tool.black]
 line-length = 100
-target-version = ["py310", "py311", "py312"]
+target-version = ["py310", "py311"]
 exclude = '''
 /(
     \.git
@@ -99,13 +102,14 @@ exclude = ["venv", ".venv", "build", "dist", "notebooks"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B"]
-ignore = ["E501", "N802", "N803", "N806", "E731"]
+ignore = ["E501", "N802", "N803", "N806", "E731", "B905", "B023", "N812"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
 addopts = "--tb=short --strict-markers"
 filterwarnings = [
+    "error::DeprecationWarning:jax_nsl",
     "ignore::UserWarning",
 ]
 markers = [

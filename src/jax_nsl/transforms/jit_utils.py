@@ -15,18 +15,24 @@ from __future__ import annotations
 
 import functools
 import time
-from typing import Any, Callable, Dict, Optional, Tuple, Union
+from collections.abc import Callable
+from typing import Any
 
 import jax
 from jax import jit
 
-ArgNums = Optional[Union[int, Tuple[int, ...]]]
-ArgNames = Optional[Union[str, Tuple[str, ...]]]
+ArgNums = int | tuple[int, ...] | None
+ArgNames = str | tuple[str, ...] | None
 
 
-def smart_jit(fun: Callable, static_argnums: ArgNums = None, static_argnames: ArgNames = None,
-              donate_argnums: ArgNums = None, donate_argnames: ArgNames = None,
-              inline: bool = False) -> Callable:
+def smart_jit(
+    fun: Callable,
+    static_argnums: ArgNums = None,
+    static_argnames: ArgNames = None,
+    donate_argnums: ArgNums = None,
+    donate_argnames: ArgNames = None,
+    inline: bool = False,
+) -> Callable:
     """``jax.jit`` with the commonly used keyword arguments spelled out.
 
     * ``static_*``: hashable Python values baked into the trace (a new value
@@ -34,32 +40,39 @@ def smart_jit(fun: Callable, static_argnums: ArgNums = None, static_argnames: Ar
     * ``donate_*``: let XLA reuse the input buffers for the outputs - essential
       for ``params = step(params, ...)`` loops with large models.
     """
-    return jit(fun, static_argnums=static_argnums, static_argnames=static_argnames,
-               donate_argnums=donate_argnums, donate_argnames=donate_argnames, inline=inline)
+    return jit(
+        fun,
+        static_argnums=static_argnums,
+        static_argnames=static_argnames,
+        donate_argnums=donate_argnums,
+        donate_argnames=donate_argnames,
+        inline=inline,
+    )
 
 
 efficient_jit = smart_jit
 
 
-def jit_with_static(fun: Callable, static_argnums: Union[int, Tuple[int, ...]] = ()) -> Callable:
+def jit_with_static(fun: Callable, static_argnums: int | tuple[int, ...] = ()) -> Callable:
     """``jit(fun, static_argnums=...)``."""
     return jit(fun, static_argnums=static_argnums)
 
 
 def conditional_jit(condition: bool = True) -> Callable:
     """Decorator that applies ``jit`` only when ``condition`` is true (handy for debugging)."""
+
     def decorator(fun: Callable) -> Callable:
         return jit(fun) if condition else fun
 
     return decorator
 
 
-def donate_argnums_jit(argnums: Union[int, Tuple[int, ...]]) -> Callable:
+def donate_argnums_jit(argnums: int | tuple[int, ...]) -> Callable:
     """Decorator form of ``jit(..., donate_argnums=argnums)``."""
     return lambda fun: jit(fun, donate_argnums=argnums)
 
 
-def static_argnums_jit(argnums: Union[int, Tuple[int, ...]]) -> Callable:
+def static_argnums_jit(argnums: int | tuple[int, ...]) -> Callable:
     """Decorator form of ``jit(..., static_argnums=argnums)``."""
     return lambda fun: jit(fun, static_argnums=argnums)
 
@@ -67,6 +80,7 @@ def static_argnums_jit(argnums: Union[int, Tuple[int, ...]]) -> Callable:
 # ---------------------------------------------------------------------------
 # Retrace diagnostics
 # ---------------------------------------------------------------------------
+
 
 def count_compilations(fun: Callable, **jit_kwargs) -> Callable:
     """``jit(fun)`` that counts how many times it has been *traced*.
@@ -104,12 +118,12 @@ def aot_compile(fun: Callable, *example_args, static_argnums: ArgNums = None, **
     return jit(fun, static_argnums=static_argnums).lower(*example_args, **example_kwargs).compile()
 
 
-def compile_info(compiled) -> Dict[str, Any]:
+def compile_info(compiled) -> dict[str, Any]:
     """FLOPs, bytes accessed and memory analysis of a compiled executable."""
     cost = compiled.cost_analysis() or {}
     if isinstance(cost, list):  # older JAX returned a list per device
         cost = cost[0] if cost else {}
-    info: Dict[str, Any] = {
+    info: dict[str, Any] = {
         "flops": cost.get("flops"),
         "bytes_accessed": cost.get("bytes accessed"),
         "transcendentals": cost.get("transcendentals"),
@@ -131,13 +145,14 @@ def compile_info(compiled) -> Dict[str, Any]:
 # Timing
 # ---------------------------------------------------------------------------
 
+
 def _block(x: Any) -> None:
     for leaf in jax.tree_util.tree_leaves(x):
         if hasattr(leaf, "block_until_ready"):
             leaf.block_until_ready()
 
 
-def profile_jit_compilation(fun: Callable, *args, **kwargs) -> Dict[str, float]:
+def profile_jit_compilation(fun: Callable, *args, **kwargs) -> dict[str, float]:
     """Separate compile time from steady-state run time (and time the un-jitted call)."""
     compiled = jit(fun)
 
@@ -161,7 +176,7 @@ def profile_jit_compilation(fun: Callable, *args, **kwargs) -> Dict[str, float]:
     }
 
 
-def warmup_jit(fun: Callable, example_inputs: Tuple[Any, ...], num_warmup: int = 1) -> Callable:
+def warmup_jit(fun: Callable, example_inputs: tuple[Any, ...], num_warmup: int = 1) -> Callable:
     """Compile ``fun`` and run it ``num_warmup`` times so later calls are steady state."""
     compiled = jit(fun)
     for _ in range(num_warmup):
@@ -169,8 +184,9 @@ def warmup_jit(fun: Callable, example_inputs: Tuple[Any, ...], num_warmup: int =
     return compiled
 
 
-def benchmark_jit(fun: Callable, *args, warmup_runs: int = 3, benchmark_runs: int = 10
-                  ) -> Tuple[float, float]:
+def benchmark_jit(
+    fun: Callable, *args, warmup_runs: int = 3, benchmark_runs: int = 10
+) -> tuple[float, float]:
     """``(mean_warmup_time, mean_run_time)`` in seconds for ``jit(fun)(*args)``."""
     compiled = jit(fun)
     t0 = time.perf_counter()

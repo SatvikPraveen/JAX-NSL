@@ -26,6 +26,7 @@ def num_devices() -> int:
 # PRNG keys
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture(scope="session")
 def rng():
     """Root PRNG key for the entire test session."""
@@ -41,6 +42,7 @@ def rng_pair(rng):
 # ---------------------------------------------------------------------------
 # Small arrays
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def vec3(rng):
@@ -66,6 +68,7 @@ def batch_mat(rng):
 # Tiny MLP parameter tree
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def mlp_params(rng):
     """Minimal MLP parameter dict: two layers (4->8->2)."""
@@ -79,6 +82,7 @@ def mlp_params(rng):
 # ---------------------------------------------------------------------------
 # Tiny datasets
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def regression_batch(rng):

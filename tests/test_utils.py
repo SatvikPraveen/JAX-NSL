@@ -40,7 +40,10 @@ from jax_nsl.utils.tree_utils import (
 
 @pytest.fixture
 def tree():
-    return {"layer1": {"W": jnp.ones((2, 3)), "b": jnp.zeros(3)}, "layer2": [jnp.ones(2), jnp.array(5.0)]}
+    return {
+        "layer1": {"W": jnp.ones((2, 3)), "b": jnp.zeros(3)},
+        "layer2": [jnp.ones(2), jnp.array(5.0)],
+    }
 
 
 class TestTreeUtils:
@@ -113,7 +116,9 @@ class TestBenchmarking:
     def test_benchmark_function_blocks_on_trees(self):
         f = jax.jit(lambda x: (x + 1, x * 2))
         stats = benchmark_function(f, jnp.ones(16), num_runs=3, num_warmup=1)
-        assert stats["num_runs"] == 3 and stats["min_time"] <= stats["mean_time"] <= stats["max_time"]
+        assert (
+            stats["num_runs"] == 3 and stats["min_time"] <= stats["mean_time"] <= stats["max_time"]
+        )
 
     def test_time_jit_compilation(self):
         stats = time_jit_compilation(lambda x: jnp.sin(x) ** 2, jnp.ones(32))
@@ -126,8 +131,11 @@ class TestBenchmarking:
         assert mem["result_bytes"] == 16 * 16 * 4
 
     def test_compare_and_report(self):
-        results = compare_implementations({"jit": jax.jit(jnp.sum), "eager": jnp.sum, "bad": lambda x: x @ jnp.ones(3)},
-                                          jnp.ones((8, 8, 8)), num_runs=2)
+        results = compare_implementations(
+            {"jit": jax.jit(jnp.sum), "eager": jnp.sum, "bad": lambda x: x @ jnp.ones(3)},
+            jnp.ones((8, 8, 8)),
+            num_runs=2,
+        )
         assert "error" in results["bad"] and "speedup" in results["jit"]
         report = create_performance_report(results)
         assert "jit:" in report and "ERROR" in report

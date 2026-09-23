@@ -72,7 +72,8 @@ class TestJitUtils:
 
     def test_count_compilations_detects_retrace(self):
         f = count_compilations(lambda x: x + 1)
-        f(jnp.ones(3)); f(jnp.ones(3))
+        f(jnp.ones(3))
+        f(jnp.ones(3))
         assert f.compilation_count() == 1
         f(jnp.ones(4))  # new shape -> retrace
         assert f.compilation_count() == 2
@@ -238,8 +239,10 @@ class TestScanUtils:
                 def body_w(h, x):
                     h = jnp.tanh(w_ @ h + x)
                     return h, h
+
                 carry, ys = fn(body_w)
                 return jnp.sum(ys) + jnp.sum(carry)
+
             return loss
 
         plain = run(lambda b: jax.lax.scan(b, jnp.zeros(3), xs))
@@ -280,7 +283,9 @@ class TestControlFlow:
     def test_binary_search_and_iterative_solver(self):
         root = binary_search(lambda x: x**2, 2.0, 0.0, 2.0, tolerance=1e-5)
         assert jnp.allclose(root, jnp.sqrt(2.0), atol=1e-4)
-        x, conv = iterative_solver(lambda x: jnp.cos(x), jnp.array(1.0), tolerance=1e-6, max_iterations=200)
+        x, conv = iterative_solver(
+            lambda x: jnp.cos(x), jnp.array(1.0), tolerance=1e-6, max_iterations=200
+        )
         assert bool(conv) and jnp.allclose(x, jnp.cos(x), atol=1e-5)
 
     def test_gather_scatter_nd(self):

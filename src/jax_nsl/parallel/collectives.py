@@ -15,7 +15,8 @@ the algorithm behind NCCL's bandwidth-optimal all-reduce.
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 import jax
 import jax.numpy as jnp
@@ -27,6 +28,7 @@ Array = jax.Array
 # ---------------------------------------------------------------------------
 # All-reduce family
 # ---------------------------------------------------------------------------
+
 
 def all_reduce_mean(x: Array, axis_name: str = "batch") -> Array:
     """``pmean``."""
@@ -74,7 +76,9 @@ def reduce_scatter(x: Array, axis_name: str = "batch", scatter_dimension: int = 
     return lax.psum_scatter(x, axis_name, scatter_dimension=scatter_dimension, tiled=True)
 
 
-def alltoall(x: Array, axis_name: str = "batch", split_axis: int = 0, concat_axis: int = 0) -> Array:
+def alltoall(
+    x: Array, axis_name: str = "batch", split_axis: int = 0, concat_axis: int = 0
+) -> Array:
     """``all_to_all``: device ``i`` sends chunk ``j`` of ``x`` to device ``j`` (used in MoE routing)."""
     return lax.all_to_all(x, axis_name, split_axis, concat_axis, tiled=True)
 
@@ -104,7 +108,9 @@ def sync_batch_stats(batch_stats: Any, axis_name: str = "batch") -> Any:
     return lax.pmean(batch_stats, axis_name)
 
 
-def gradient_synchronization(grads: Any, axis_name: str = "batch", clip_norm: Optional[float] = None) -> Any:
+def gradient_synchronization(
+    grads: Any, axis_name: str = "batch", clip_norm: float | None = None
+) -> Any:
     """Average gradients across replicas, optionally clipping by the *global* norm afterwards.
 
     Clipping the averaged gradient (what is actually applied) is the
@@ -119,7 +125,9 @@ def gradient_synchronization(grads: Any, axis_name: str = "batch", clip_norm: Op
     return grads
 
 
-def hierarchical_all_reduce(x: Array, intra_node_axis: str = "local", inter_node_axis: str = "global") -> Array:
+def hierarchical_all_reduce(
+    x: Array, intra_node_axis: str = "local", inter_node_axis: str = "global"
+) -> Array:
     """Reduce within a node first, then across nodes (two nested mesh axes)."""
     return lax.pmean(lax.pmean(x, intra_node_axis), inter_node_axis)
 
@@ -128,7 +136,8 @@ def hierarchical_all_reduce(x: Array, intra_node_axis: str = "local", inter_node
 # Ring all-reduce from point-to-point sends
 # ---------------------------------------------------------------------------
 
-def ring_all_reduce(x: Array, axis_name: str = "batch", num_devices: Optional[int] = None) -> Array:
+
+def ring_all_reduce(x: Array, axis_name: str = "batch", num_devices: int | None = None) -> Array:
     """Bandwidth-optimal ring all-reduce (sum) built only from ``ppermute``.
 
     With ``N`` devices, ``x`` is split into ``N`` chunks.  Phase 1
@@ -181,8 +190,13 @@ def ring_all_reduce(x: Array, axis_name: str = "batch", num_devices: Optional[in
 # Cost models
 # ---------------------------------------------------------------------------
 
-def compute_communication_volume(array_shapes: Sequence[Sequence[int]], num_devices: int,
-                                 collective: str = "all_reduce", dtype: Any = jnp.float32) -> Dict[str, float]:
+
+def compute_communication_volume(
+    array_shapes: Sequence[Sequence[int]],
+    num_devices: int,
+    collective: str = "all_reduce",
+    dtype: Any = jnp.float32,
+) -> dict[str, float]:
     """Bytes each device *sends* for a collective over arrays of the given shapes.
 
     Ring all-reduce: ``2 (N-1)/N * size``; reduce-scatter or all-gather alone:
@@ -192,10 +206,19 @@ def compute_communication_volume(array_shapes: Sequence[Sequence[int]], num_devi
     itemsize = jnp.dtype(dtype).itemsize
     total = sum(int(jnp.prod(jnp.array(s))) for s in array_shapes) * itemsize
     frac = (num_devices - 1) / num_devices
-    factors = {"all_reduce": 2 * frac, "reduce_scatter": frac, "all_gather": frac,
-               "all_to_all": frac, "naive_all_reduce": num_devices - 1}
+    factors = {
+        "all_reduce": 2 * frac,
+        "reduce_scatter": frac,
+        "all_gather": frac,
+        "all_to_all": frac,
+        "naive_all_reduce": num_devices - 1,
+    }
     if collective not in factors:
         raise ValueError(f"Unknown collective: {collective}")
     mb = 1024 * 1024
-    return {"total_data_mb": total / mb, "bytes_sent_per_device_mb": total * factors[collective] / mb,
-            "num_arrays": len(array_shapes), "num_devices": num_devices}
+    return {
+        "total_data_mb": total / mb,
+        "bytes_sent_per_device_mb": total * factors[collective] / mb,
+        "num_arrays": len(array_shapes),
+        "num_devices": num_devices,
+    }

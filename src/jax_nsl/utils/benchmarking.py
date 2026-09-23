@@ -18,7 +18,8 @@ from __future__ import annotations
 
 import statistics
 import time
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from collections.abc import Callable, Sequence
+from typing import Any
 
 import jax
 import jax.numpy as jnp
@@ -37,8 +38,9 @@ def warmup_function(fn: Callable, *args, num_warmup: int = 3, **kwargs) -> None:
         _block(fn(*args, **kwargs))
 
 
-def benchmark_function(fn: Callable, *args, num_runs: int = 10, num_warmup: int = 3,
-                       return_all: bool = False, **kwargs) -> Dict[str, Any]:
+def benchmark_function(
+    fn: Callable, *args, num_runs: int = 10, num_warmup: int = 3, return_all: bool = False, **kwargs
+) -> dict[str, Any]:
     """Wall-clock statistics (seconds) for ``fn(*args, **kwargs)`` after warm-up."""
     warmup_function(fn, *args, num_warmup=num_warmup, **kwargs)
     times = []
@@ -46,7 +48,7 @@ def benchmark_function(fn: Callable, *args, num_runs: int = 10, num_warmup: int 
         t0 = time.perf_counter()
         _block(fn(*args, **kwargs))
         times.append(time.perf_counter() - t0)
-    stats: Dict[str, Any] = {
+    stats: dict[str, Any] = {
         "mean_time": statistics.fmean(times),
         "std_time": statistics.pstdev(times) if len(times) > 1 else 0.0,
         "min_time": min(times),
@@ -59,7 +61,7 @@ def benchmark_function(fn: Callable, *args, num_runs: int = 10, num_warmup: int 
     return stats
 
 
-def time_jit_compilation(fn: Callable, *args, **kwargs) -> Dict[str, float]:
+def time_jit_compilation(fn: Callable, *args, **kwargs) -> dict[str, float]:
     """Compile time (first call minus steady state) vs. execution time of ``jit(fn)``."""
     jitted = jax.jit(fn)
     t0 = time.perf_counter()
@@ -69,21 +71,34 @@ def time_jit_compilation(fn: Callable, *args, **kwargs) -> Dict[str, float]:
     _block(jitted(*args, **kwargs))
     exec_time = time.perf_counter() - t0
     compile_time = max(first - exec_time, 0.0)
-    return {"compile_time": compile_time, "execution_time": exec_time, "total_time": first,
-            "compile_overhead": compile_time / exec_time if exec_time > 0 else float("inf")}
+    return {
+        "compile_time": compile_time,
+        "execution_time": exec_time,
+        "total_time": first,
+        "compile_overhead": compile_time / exec_time if exec_time > 0 else float("inf"),
+    }
 
 
-def measure_throughput(fn: Callable, batch_sizes: Sequence[int], example_input: Array,
-                       *args, num_runs: int = 5, **kwargs) -> Dict[int, Dict[str, float]]:
+def measure_throughput(
+    fn: Callable,
+    batch_sizes: Sequence[int],
+    example_input: Array,
+    *args,
+    num_runs: int = 5,
+    **kwargs,
+) -> dict[int, dict[str, float]]:
     """Samples/second at several batch sizes (``example_input`` provides the per-sample shape)."""
     results = {}
     for b in batch_sizes:
         x = jnp.ones((b,) + example_input.shape[1:], example_input.dtype)
         stats = benchmark_function(fn, x, *args, num_runs=num_runs, **kwargs)
         mean = stats["mean_time"]
-        results[b] = {"throughput_samples_per_sec": b / mean if mean > 0 else float("inf"),
-                      "latency_per_sample_ms": 1000.0 * mean / b, "total_time_sec": mean,
-                      "std_time_sec": stats["std_time"]}
+        results[b] = {
+            "throughput_samples_per_sec": b / mean if mean > 0 else float("inf"),
+            "latency_per_sample_ms": 1000.0 * mean / b,
+            "total_time_sec": mean,
+            "std_time_sec": stats["std_time"],
+        }
     return results
 
 
@@ -91,13 +106,17 @@ def measure_throughput(fn: Callable, batch_sizes: Sequence[int], example_input: 
 # Memory and FLOPs
 # ---------------------------------------------------------------------------
 
-def device_memory_stats(device: Optional[jax.Device] = None) -> Dict[str, float]:
+
+def device_memory_stats(device: jax.Device | None = None) -> dict[str, float]:
     """Live/peak bytes on a device (MB) when the backend reports them (GPU/TPU; CPU gives {})."""
     device = device or jax.devices()[0]
     stats = device.memory_stats() or {}
     mb = 1024 * 1024
-    return {k: v / mb for k, v in stats.items() if k in ("bytes_in_use", "peak_bytes_in_use",
-                                                         "bytes_limit", "bytes_reserved")}
+    return {
+        k: v / mb
+        for k, v in stats.items()
+        if k in ("bytes_in_use", "peak_bytes_in_use", "bytes_limit", "bytes_reserved")
+    }
 
 
 def live_array_bytes() -> int:
@@ -105,7 +124,7 @@ def live_array_bytes() -> int:
     return int(sum(a.nbytes for a in jax.live_arrays()))
 
 
-def profile_memory_usage(fn: Callable, *args, **kwargs) -> Dict[str, Any]:
+def profile_memory_usage(fn: Callable, *args, **kwargs) -> dict[str, Any]:
     """Static memory analysis of ``jit(fn)`` plus live-array deltas around one call.
 
     ``temp_bytes`` is XLA's estimate of scratch memory for the executable,
@@ -114,12 +133,14 @@ def profile_memory_usage(fn: Callable, *args, **kwargs) -> Dict[str, Any]:
     given shapes.
     """
     compiled = jax.jit(fn).lower(*args, **kwargs).compile()
-    out: Dict[str, Any] = {}
+    out: dict[str, Any] = {}
     try:
         mem = compiled.memory_analysis()
-        out.update(temp_bytes=getattr(mem, "temp_size_in_bytes", None),
-                   argument_bytes=getattr(mem, "argument_size_in_bytes", None),
-                   output_bytes=getattr(mem, "output_size_in_bytes", None))
+        out.update(
+            temp_bytes=getattr(mem, "temp_size_in_bytes", None),
+            argument_bytes=getattr(mem, "argument_size_in_bytes", None),
+            output_bytes=getattr(mem, "output_size_in_bytes", None),
+        )
     except Exception:
         pass
     before = live_array_bytes()
@@ -130,7 +151,7 @@ def profile_memory_usage(fn: Callable, *args, **kwargs) -> Dict[str, Any]:
     return out
 
 
-def count_flops(fn: Callable, *args, **kwargs) -> Optional[float]:
+def count_flops(fn: Callable, *args, **kwargs) -> float | None:
     """XLA's FLOP estimate for ``jit(fn)`` at these shapes (``None`` if unavailable)."""
     compiled = jax.jit(fn).lower(*args, **kwargs).compile()
     cost = compiled.cost_analysis() or {}
@@ -143,10 +164,12 @@ def count_flops(fn: Callable, *args, **kwargs) -> Optional[float]:
 # Comparisons and reports
 # ---------------------------------------------------------------------------
 
-def compare_implementations(implementations: Dict[str, Callable], *args, num_runs: int = 10,
-                            **kwargs) -> Dict[str, Dict[str, Any]]:
+
+def compare_implementations(
+    implementations: dict[str, Callable], *args, num_runs: int = 10, **kwargs
+) -> dict[str, dict[str, Any]]:
     """Benchmark several functions on the same inputs; adds ``speedup`` relative to the fastest."""
-    results: Dict[str, Dict[str, Any]] = {}
+    results: dict[str, dict[str, Any]] = {}
     for name, fn in implementations.items():
         try:
             results[name] = benchmark_function(fn, *args, num_runs=num_runs, **kwargs)
@@ -162,29 +185,40 @@ def compare_implementations(implementations: Dict[str, Callable], *args, num_run
     return results
 
 
-def benchmark_gradient_computation(fn: Callable, *args, num_runs: int = 5, **kwargs) -> Dict[str, Any]:
+def benchmark_gradient_computation(
+    fn: Callable, *args, num_runs: int = 5, **kwargs
+) -> dict[str, Any]:
     """Time ``jit(grad(fn))``."""
     return benchmark_function(jax.jit(jax.grad(fn)), *args, num_runs=num_runs, **kwargs)
 
 
-def benchmark_vmap_scaling(fn: Callable, single_input: Any, batch_sizes: Sequence[int],
-                           num_runs: int = 3) -> Dict[int, Dict[str, float]]:
+def benchmark_vmap_scaling(
+    fn: Callable, single_input: Any, batch_sizes: Sequence[int], num_runs: int = 3
+) -> dict[int, dict[str, float]]:
     """Time ``jit(vmap(fn))`` at several batch sizes to see how close to linear it scales."""
     vf = jax.jit(jax.vmap(fn))
     results = {}
     for b in batch_sizes:
-        batch = jax.tree_util.tree_map(lambda x: jnp.broadcast_to(x, (b,) + jnp.shape(x)), single_input)
+        batch = jax.tree_util.tree_map(
+            lambda x: jnp.broadcast_to(x, (b,) + jnp.shape(x)), single_input
+        )
         stats = benchmark_function(vf, batch, num_runs=num_runs)
         per = stats["mean_time"] / b
-        results[b] = {"total_time": stats["mean_time"], "time_per_sample": per,
-                      "samples_per_second": 1.0 / per if per > 0 else float("inf"),
-                      "std_time": stats["std_time"]}
+        results[b] = {
+            "total_time": stats["mean_time"],
+            "time_per_sample": per,
+            "samples_per_second": 1.0 / per if per > 0 else float("inf"),
+            "std_time": stats["std_time"],
+        }
     return results
 
 
-def auto_benchmark(fn: Callable, input_shapes: Sequence[Tuple[int, ...]],
-                   dtypes: Optional[Sequence[Any]] = None,
-                   compile_modes: Sequence[bool] = (False, True)) -> Dict[str, Dict[str, Any]]:
+def auto_benchmark(
+    fn: Callable,
+    input_shapes: Sequence[tuple[int, ...]],
+    dtypes: Sequence[Any] | None = None,
+    compile_modes: Sequence[bool] = (False, True),
+) -> dict[str, dict[str, Any]]:
     """Grid over shapes x dtypes x {eager, jit}."""
     dtypes = list(dtypes) if dtypes else [jnp.float32]
     results = {}
@@ -196,14 +230,19 @@ def auto_benchmark(fn: Callable, input_shapes: Sequence[Tuple[int, ...]],
                 test_fn = jax.jit(fn) if use_jit else fn
                 try:
                     results[name] = benchmark_function(test_fn, x)
-                    results[name]["config"] = {"shape": shape, "dtype": jnp.dtype(dtype).name, "jit": use_jit}
+                    results[name]["config"] = {
+                        "shape": shape,
+                        "dtype": jnp.dtype(dtype).name,
+                        "jit": use_jit,
+                    }
                 except Exception as e:
                     results[name] = {"error": str(e)}
     return results
 
 
-def create_performance_report(benchmark_results: Dict[str, Dict[str, Any]],
-                              title: str = "Performance Report") -> str:
+def create_performance_report(
+    benchmark_results: dict[str, dict[str, Any]], title: str = "Performance Report"
+) -> str:
     """Plain-text table of benchmark results."""
     lines = [title, "=" * len(title), ""]
     for name, r in benchmark_results.items():
@@ -212,8 +251,10 @@ def create_performance_report(benchmark_results: Dict[str, Dict[str, Any]],
             lines.append(f"  ERROR: {r['error']}")
         else:
             if "mean_time" in r:
-                lines.append(f"  mean {r['mean_time'] * 1e3:9.3f} ms   std {r['std_time'] * 1e3:8.3f} ms   "
-                             f"min {r['min_time'] * 1e3:8.3f} ms   max {r['max_time'] * 1e3:8.3f} ms")
+                lines.append(
+                    f"  mean {r['mean_time'] * 1e3:9.3f} ms   std {r['std_time'] * 1e3:8.3f} ms   "
+                    f"min {r['min_time'] * 1e3:8.3f} ms   max {r['max_time'] * 1e3:8.3f} ms"
+                )
             if "speedup" in r:
                 lines.append(f"  speedup vs best: {r['speedup']:.2f}x")
             if "throughput_samples_per_sec" in r:
@@ -232,9 +273,9 @@ class PerformanceProfiler:
     def __init__(self, name: str = "operation", verbose: bool = False):
         self.name = name
         self.verbose = verbose
-        self.start_time: Optional[float] = None
-        self.end_time: Optional[float] = None
-        self._tracked: List[Any] = []
+        self.start_time: float | None = None
+        self.end_time: float | None = None
+        self._tracked: list[Any] = []
 
     def track(self, value: Any) -> Any:
         """Register outputs to block on at exit; returns them unchanged."""
@@ -253,7 +294,7 @@ class PerformanceProfiler:
             print(f"{self.name}: {self.duration:.6f} s")
 
     @property
-    def duration(self) -> Optional[float]:
+    def duration(self) -> float | None:
         if self.start_time is None or self.end_time is None:
             return None
         return self.end_time - self.start_time

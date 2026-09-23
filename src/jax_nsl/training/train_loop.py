@@ -16,7 +16,8 @@ from __future__ import annotations
 
 import os
 import pickle
-from typing import Any, Callable, Dict, Iterable, NamedTuple, Optional, Tuple
+from collections.abc import Callable, Iterable
+from typing import Any, NamedTuple
 
 import jax
 import jax.numpy as jnp
@@ -26,27 +27,33 @@ from jax import lax
 from .optimizers import clip_grads_by_global_norm
 
 Array = jax.Array
-Batch = Dict[str, Array]
+Batch = dict[str, Array]
 
 
 class TrainState(NamedTuple):
     """Everything needed to resume training. ``params`` mirrors ``optimizer_state.params``."""
+
     step: Array
     params: Any
     optimizer_state: Any
     rng: Array
-    metrics: Dict[str, Any]
+    metrics: dict[str, Any]
 
 
-def create_train_state(params: Any, optimizer_init: Callable, rng: Array,
-                       initial_metrics: Optional[Dict[str, Any]] = None) -> TrainState:
+def create_train_state(
+    params: Any, optimizer_init: Callable, rng: Array, initial_metrics: dict[str, Any] | None = None
+) -> TrainState:
     """Initialise a :class:`TrainState`."""
-    return TrainState(step=jnp.zeros((), jnp.int32), params=params,
-                      optimizer_state=optimizer_init(params), rng=rng,
-                      metrics=initial_metrics or {})
+    return TrainState(
+        step=jnp.zeros((), jnp.int32),
+        params=params,
+        optimizer_state=optimizer_init(params),
+        rng=rng,
+        metrics=initial_metrics or {},
+    )
 
 
-def _default_metrics(predictions: Array, batch: Batch, loss: Array) -> Dict[str, Array]:
+def _default_metrics(predictions: Array, batch: Batch, loss: Array) -> dict[str, Array]:
     metrics = {"loss": loss}
     if predictions.ndim >= 2 and batch["labels"].ndim == predictions.ndim - 1:
         metrics["accuracy"] = jnp.mean(jnp.argmax(predictions, axis=-1) == batch["labels"])
@@ -57,9 +64,16 @@ def _default_metrics(predictions: Array, batch: Batch, loss: Array) -> Dict[str,
 # Step factories
 # ---------------------------------------------------------------------------
 
-def make_train_step(forward_fn: Callable, loss_fn: Callable, optimizer_update: Callable,
-                    metrics_fn: Callable = _default_metrics, max_grad_norm: Optional[float] = None,
-                    use_rng: bool = False, jit: bool = True) -> Callable:
+
+def make_train_step(
+    forward_fn: Callable,
+    loss_fn: Callable,
+    optimizer_update: Callable,
+    metrics_fn: Callable = _default_metrics,
+    max_grad_norm: float | None = None,
+    use_rng: bool = False,
+    jit: bool = True,
+) -> Callable:
     """Build ``step(state, batch) -> (state, metrics)``.
 
     Args:
@@ -72,7 +86,8 @@ def make_train_step(forward_fn: Callable, loss_fn: Callable, optimizer_update: C
             (for dropout).
         jit: Compile the step.
     """
-    def step(state: TrainState, batch: Batch) -> Tuple[TrainState, Dict[str, Array]]:
+
+    def step(state: TrainState, batch: Batch) -> tuple[TrainState, dict[str, Array]]:
         rng, sub = jax.random.split(state.rng)
 
         def loss_and_metrics(params):
@@ -85,17 +100,27 @@ def make_train_step(forward_fn: Callable, loss_fn: Callable, optimizer_update: C
         if max_grad_norm is not None:
             grads = clip_grads_by_global_norm(grads, max_grad_norm)
         opt_state = optimizer_update(state.optimizer_state, grads)
-        new_state = TrainState(step=state.step + 1, params=opt_state.params,
-                               optimizer_state=opt_state, rng=rng, metrics=metrics)
+        new_state = TrainState(
+            step=state.step + 1,
+            params=opt_state.params,
+            optimizer_state=opt_state,
+            rng=rng,
+            metrics=metrics,
+        )
         return new_state, metrics
 
     return jax.jit(step) if jit else step
 
 
-def make_eval_step(forward_fn: Callable, loss_fn: Callable, metrics_fn: Callable = _default_metrics,
-                   jit: bool = True) -> Callable:
+def make_eval_step(
+    forward_fn: Callable,
+    loss_fn: Callable,
+    metrics_fn: Callable = _default_metrics,
+    jit: bool = True,
+) -> Callable:
     """Build ``eval_step(params, batch) -> metrics`` (prefixed with ``val_``)."""
-    def step(params: Any, batch: Batch) -> Dict[str, Array]:
+
+    def step(params: Any, batch: Batch) -> dict[str, Array]:
         preds = forward_fn(params, batch["inputs"], training=False)
         loss = loss_fn(preds, batch["labels"])
         return {f"val_{k}": v for k, v in metrics_fn(preds, batch, loss).items()}
@@ -103,14 +128,20 @@ def make_eval_step(forward_fn: Callable, loss_fn: Callable, metrics_fn: Callable
     return jax.jit(step) if jit else step
 
 
-def training_step(state: TrainState, batch: Batch, forward_fn: Callable, loss_fn: Callable,
-                  optimizer_update: Callable) -> Tuple[TrainState, Dict[str, Array]]:
+def training_step(
+    state: TrainState,
+    batch: Batch,
+    forward_fn: Callable,
+    loss_fn: Callable,
+    optimizer_update: Callable,
+) -> tuple[TrainState, dict[str, Array]]:
     """Un-jitted single step for experimentation; prefer :func:`make_train_step` in loops."""
     return make_train_step(forward_fn, loss_fn, optimizer_update, jit=False)(state, batch)
 
 
-def evaluation_step(state: TrainState, batch: Batch, forward_fn: Callable, loss_fn: Callable
-                    ) -> Dict[str, Array]:
+def evaluation_step(
+    state: TrainState, batch: Batch, forward_fn: Callable, loss_fn: Callable
+) -> dict[str, Array]:
     """Un-jitted evaluation step."""
     return make_eval_step(forward_fn, loss_fn, jit=False)(state.params, batch)
 
@@ -119,8 +150,10 @@ def evaluation_step(state: TrainState, batch: Batch, forward_fn: Callable, loss_
 # Gradient accumulation
 # ---------------------------------------------------------------------------
 
-def accumulate_gradients(loss_fn: Callable[[Any, Batch], Array], params: Any, microbatches: Batch
-                         ) -> Tuple[Array, Any]:
+
+def accumulate_gradients(
+    loss_fn: Callable[[Any, Batch], Array], params: Any, microbatches: Batch
+) -> tuple[Array, Any]:
     """Mean loss and gradient over microbatches stacked on a leading axis.
 
     ``lax.scan`` processes one microbatch at a time, so peak memory is that
@@ -139,7 +172,10 @@ def accumulate_gradients(loss_fn: Callable[[Any, Batch], Array], params: Any, mi
     def body(carry, mb):
         loss_acc, grad_acc = carry
         loss, g = grad_fn(params, mb)
-        return (loss_acc + loss / n, jax.tree_util.tree_map(lambda a, b: a + b / n, grad_acc, g)), None
+        return (
+            loss_acc + loss / n,
+            jax.tree_util.tree_map(lambda a, b: a + b / n, grad_acc, g),
+        ), None
 
     zeros = jax.tree_util.tree_map(jnp.zeros_like, params)
     (loss, grads), _ = lax.scan(body, (jnp.zeros(()), zeros), microbatches)
@@ -148,6 +184,7 @@ def accumulate_gradients(loss_fn: Callable[[Any, Batch], Array], params: Any, mi
 
 def split_into_microbatches(batch: Batch, num_microbatches: int) -> Batch:
     """Reshape ``(B, ...)`` leaves into ``(n, B // n, ...)``."""
+
     def split(x):
         b = x.shape[0]
         if b % num_microbatches:
@@ -157,16 +194,23 @@ def split_into_microbatches(batch: Batch, num_microbatches: int) -> Batch:
     return jax.tree_util.tree_map(split, batch)
 
 
-def make_accumulating_train_step(forward_fn: Callable, loss_fn: Callable, optimizer_update: Callable,
-                                 num_microbatches: int, max_grad_norm: Optional[float] = None) -> Callable:
+def make_accumulating_train_step(
+    forward_fn: Callable,
+    loss_fn: Callable,
+    optimizer_update: Callable,
+    num_microbatches: int,
+    max_grad_norm: float | None = None,
+) -> Callable:
     """Like :func:`make_train_step` but accumulates over ``num_microbatches`` slices of each batch."""
+
     def micro_loss(params, mb):
         return loss_fn(forward_fn(params, mb["inputs"], training=True), mb["labels"])
 
     @jax.jit
     def step(state: TrainState, batch: Batch):
-        loss, grads = accumulate_gradients(micro_loss, state.params,
-                                           split_into_microbatches(batch, num_microbatches))
+        loss, grads = accumulate_gradients(
+            micro_loss, state.params, split_into_microbatches(batch, num_microbatches)
+        )
         if max_grad_norm is not None:
             grads = clip_grads_by_global_norm(grads, max_grad_norm)
         opt_state = optimizer_update(state.optimizer_state, grads)
@@ -180,14 +224,17 @@ def make_accumulating_train_step(forward_fn: Callable, loss_fn: Callable, optimi
 # Mixed precision
 # ---------------------------------------------------------------------------
 
+
 def cast_floating(tree: Any, dtype: Any) -> Any:
     """Cast every floating-point leaf of a pytree to ``dtype`` (ints/bools untouched)."""
     return jax.tree_util.tree_map(
-        lambda x: x.astype(dtype) if jnp.issubdtype(x.dtype, jnp.floating) else x, tree)
+        lambda x: x.astype(dtype) if jnp.issubdtype(x.dtype, jnp.floating) else x, tree
+    )
 
 
-def with_mixed_precision(forward_fn: Callable, compute_dtype: Any = jnp.bfloat16,
-                         output_dtype: Any = jnp.float32) -> Callable:
+def with_mixed_precision(
+    forward_fn: Callable, compute_dtype: Any = jnp.bfloat16, output_dtype: Any = jnp.float32
+) -> Callable:
     """Run ``forward_fn`` with params and inputs cast to ``compute_dtype``.
 
     Parameters stay in float32 in the optimiser (the "master copy"); only the
@@ -195,9 +242,14 @@ def with_mixed_precision(forward_fn: Callable, compute_dtype: Any = jnp.bfloat16
     are upcast so the loss and its softmax are computed in float32.  bf16 has
     float32's exponent range, so - unlike fp16 - no loss scaling is needed.
     """
+
     def wrapped(params, inputs, *args, **kwargs):
-        out = forward_fn(cast_floating(params, compute_dtype), cast_floating(inputs, compute_dtype),
-                         *args, **kwargs)
+        out = forward_fn(
+            cast_floating(params, compute_dtype),
+            cast_floating(inputs, compute_dtype),
+            *args,
+            **kwargs,
+        )
         return cast_floating(out, output_dtype)
 
     return wrapped
@@ -223,14 +275,19 @@ def scaled_loss_and_grad(loss_fn: Callable, loss_scale: float = 1024.0) -> Calla
 # Loops
 # ---------------------------------------------------------------------------
 
+
 def _average(metric_list):
     if not metric_list:
         return {}
     return {k: float(np.mean([float(m[k]) for m in metric_list])) for k in metric_list[0]}
 
 
-def train_epoch(state: TrainState, train_loader: Iterable[Batch], train_step: Callable,
-                num_batches: Optional[int] = None) -> Tuple[TrainState, Dict[str, float]]:
+def train_epoch(
+    state: TrainState,
+    train_loader: Iterable[Batch],
+    train_step: Callable,
+    num_batches: int | None = None,
+) -> tuple[TrainState, dict[str, float]]:
     """Run ``train_step`` over a loader; returns the state and epoch-averaged metrics."""
     collected = []
     for i, batch in enumerate(train_loader):
@@ -241,8 +298,9 @@ def train_epoch(state: TrainState, train_loader: Iterable[Batch], train_step: Ca
     return state, _average(collected)
 
 
-def evaluate_model(params: Any, val_loader: Iterable[Batch], eval_step: Callable,
-                   num_batches: Optional[int] = None) -> Dict[str, float]:
+def evaluate_model(
+    params: Any, val_loader: Iterable[Batch], eval_step: Callable, num_batches: int | None = None
+) -> dict[str, float]:
     """Average ``eval_step`` metrics over a loader."""
     collected = []
     for i, batch in enumerate(val_loader):
@@ -252,11 +310,18 @@ def evaluate_model(params: Any, val_loader: Iterable[Batch], eval_step: Callable
     return _average(collected)
 
 
-def training_loop(initial_state: TrainState, train_loader: Callable[[], Iterable[Batch]],
-                  val_loader: Optional[Callable[[], Iterable[Batch]]], train_step: Callable,
-                  eval_step: Optional[Callable], num_epochs: int, eval_every: int = 1,
-                  save_every: int = 0, checkpoint_dir: Optional[str] = None,
-                  log_fn: Optional[Callable[[int, Dict[str, float]], None]] = print) -> TrainState:
+def training_loop(
+    initial_state: TrainState,
+    train_loader: Callable[[], Iterable[Batch]],
+    val_loader: Callable[[], Iterable[Batch]] | None,
+    train_step: Callable,
+    eval_step: Callable | None,
+    num_epochs: int,
+    eval_every: int = 1,
+    save_every: int = 0,
+    checkpoint_dir: str | None = None,
+    log_fn: Callable[[int, dict[str, float]], None] | None = print,
+) -> TrainState:
     """Epoch loop with optional evaluation, checkpointing and logging.
 
     ``train_loader``/``val_loader`` are *callables returning iterables* so a
@@ -279,11 +344,14 @@ def training_loop(initial_state: TrainState, train_loader: Callable[[], Iterable
 # Checkpointing
 # ---------------------------------------------------------------------------
 
+
 def _to_host(tree: Any) -> Any:
     def convert(x):
         if isinstance(x, jax.Array) and jnp.issubdtype(x.dtype, jax.dtypes.prng_key):
-            return {"__prng_key__": np.asarray(jax.random.key_data(x)),
-                    "impl": str(jax.random.key_impl(x))}
+            return {
+                "__prng_key__": np.asarray(jax.random.key_data(x)),
+                "impl": str(jax.random.key_impl(x)),
+            }
         return np.asarray(x) if isinstance(x, (jax.Array, np.ndarray)) else x
 
     return jax.tree_util.tree_map(convert, tree)
@@ -319,8 +387,10 @@ def load_checkpoint(checkpoint_path: str) -> TrainState:
 # Metrics
 # ---------------------------------------------------------------------------
 
-def compute_metrics(predictions: Array, labels: Array, task_type: str = "classification"
-                    ) -> Dict[str, float]:
+
+def compute_metrics(
+    predictions: Array, labels: Array, task_type: str = "classification"
+) -> dict[str, float]:
     """Accuracy/top-5 for classification, MSE/MAE/RMSE for regression."""
     if task_type == "classification":
         pred = jnp.argmax(predictions, axis=-1)
@@ -331,6 +401,9 @@ def compute_metrics(predictions: Array, labels: Array, task_type: str = "classif
         return {"accuracy": float(accuracy), "top5_accuracy": float(topk_acc)}
     if task_type == "regression":
         mse = jnp.mean((predictions - labels) ** 2)
-        return {"mse": float(mse), "mae": float(jnp.mean(jnp.abs(predictions - labels))),
-                "rmse": float(jnp.sqrt(mse))}
+        return {
+            "mse": float(mse),
+            "mae": float(jnp.mean(jnp.abs(predictions - labels))),
+            "rmse": float(jnp.sqrt(mse)),
+        }
     raise ValueError(f"Unknown task type: {task_type}")

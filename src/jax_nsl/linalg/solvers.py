@@ -18,18 +18,20 @@ the final residual, iteration count and a convergence flag.
 from __future__ import annotations
 
 import functools
-from typing import Callable, NamedTuple, Optional, Tuple, Union
+from collections.abc import Callable
+from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
 from jax import lax
 
 Array = jax.Array
-LinearOperator = Union[Array, Callable[[Array], Array]]
+LinearOperator = Array | Callable[[Array], Array]
 
 
 class SolverState(NamedTuple):
     """Final state of an iterative solver."""
+
     x: Array
     residual: Array
     iteration: Array
@@ -48,7 +50,8 @@ def _as_matvec(A: LinearOperator) -> Callable[[Array], Array]:
 # Linear systems
 # ---------------------------------------------------------------------------
 
-def _build_minv(preconditioner: Optional[LinearOperator], b: Array):
+
+def _build_minv(preconditioner: LinearOperator | None, b: Array):
     """Return ``(minv_fn, consts)`` with ``minv_fn(r, *consts)``."""
     if preconditioner is None:
         return (lambda r: r), ()
@@ -110,8 +113,9 @@ def _cg_bwd(matvec, minv, tolerance, max_iterations, residuals, cotangents):
     """
     x, a_consts, m_consts = residuals
     g_x = cotangents[0]
-    lam, _ = _cg_loop(matvec, minv, tolerance, max_iterations, g_x, jnp.zeros_like(g_x),
-                      a_consts, m_consts)
+    lam, _ = _cg_loop(
+        matvec, minv, tolerance, max_iterations, g_x, jnp.zeros_like(g_x), a_consts, m_consts
+    )
     # dL/dconsts = vjp of (consts -> A(consts) x) at cotangent -lam.
     _, vjp_fn = jax.vjp(lambda c: matvec(x, *c), a_consts)
     (g_a_consts,) = vjp_fn(-lam)
@@ -122,10 +126,14 @@ def _cg_bwd(matvec, minv, tolerance, max_iterations, residuals, cotangents):
 _cg.defvjp(_cg_fwd, _cg_bwd)
 
 
-def conjugate_gradient(A: LinearOperator, b: Array, x0: Optional[Array] = None,
-                       tolerance: float = 1e-6, max_iterations: Optional[int] = None,
-                       preconditioner: Optional[LinearOperator] = None
-                       ) -> Tuple[Array, SolverState]:
+def conjugate_gradient(
+    A: LinearOperator,
+    b: Array,
+    x0: Array | None = None,
+    tolerance: float = 1e-6,
+    max_iterations: int | None = None,
+    preconditioner: LinearOperator | None = None,
+) -> tuple[Array, SolverState]:
     """Preconditioned conjugate gradient for symmetric positive-definite ``A``.
 
     The solver is ``jit``-able and *reverse-mode differentiable* with respect
@@ -158,12 +166,14 @@ def conjugate_gradient(A: LinearOperator, b: Array, x0: Optional[Array] = None,
     else:
         matvec, a_consts = (lambda v, M: M @ v), (A,)
     minv, m_consts = _build_minv(preconditioner, b)
-    return _cg(matvec, minv, float(tolerance), int(max_iterations), b, x0, a_consts,
-               tuple(m_consts))
+    return _cg(
+        matvec, minv, float(tolerance), int(max_iterations), b, x0, a_consts, tuple(m_consts)
+    )
 
 
-def jacobi_method(A: Array, b: Array, x0: Optional[Array] = None, tolerance: float = 1e-6,
-                  max_iterations: int = 1000) -> Tuple[Array, SolverState]:
+def jacobi_method(
+    A: Array, b: Array, x0: Array | None = None, tolerance: float = 1e-6, max_iterations: int = 1000
+) -> tuple[Array, SolverState]:
     """Jacobi iteration ``x <- D^{-1}(b - R x)``; converges for diagonally dominant ``A``."""
     if x0 is None:
         x0 = jnp.zeros_like(b)
@@ -185,8 +195,9 @@ def jacobi_method(A: Array, b: Array, x0: Optional[Array] = None, tolerance: flo
     return x, SolverState(x=x, residual=r, iteration=k, converged=err <= threshold, error=err)
 
 
-def linear_solve_iterative(A: Array, b: Array, method: str = "cg", **kwargs
-                           ) -> Tuple[Array, SolverState]:
+def linear_solve_iterative(
+    A: Array, b: Array, method: str = "cg", **kwargs
+) -> tuple[Array, SolverState]:
     """Dispatch to :func:`conjugate_gradient` (``'cg'``) or :func:`jacobi_method` (``'jacobi'``)."""
     if method == "cg":
         return conjugate_gradient(A, b, **kwargs)
@@ -219,9 +230,14 @@ def least_squares_solver(A: Array, b: Array, regularization: float = 0.0) -> Arr
 # Unconstrained minimisation
 # ---------------------------------------------------------------------------
 
-def gradient_descent(objective_fn: Callable[[Array], Array], x0: Array,
-                     learning_rate: float = 0.01, tolerance: float = 1e-6,
-                     max_iterations: int = 1000) -> Tuple[Array, SolverState]:
+
+def gradient_descent(
+    objective_fn: Callable[[Array], Array],
+    x0: Array,
+    learning_rate: float = 0.01,
+    tolerance: float = 1e-6,
+    max_iterations: int = 1000,
+) -> tuple[Array, SolverState]:
     """Plain gradient descent until ``||grad|| < tolerance`` or ``max_iterations``."""
     grad_fn = jax.grad(objective_fn)
 
@@ -239,10 +255,14 @@ def gradient_descent(objective_fn: Callable[[Array], Array], x0: Array,
     return x, SolverState(x=x, residual=g, iteration=k, converged=err < tolerance, error=err)
 
 
-def nesterov_momentum(objective_fn: Callable[[Array], Array], x0: Array,
-                      learning_rate: float = 0.01, momentum: float = 0.9,
-                      tolerance: float = 1e-6, max_iterations: int = 1000
-                      ) -> Tuple[Array, SolverState]:
+def nesterov_momentum(
+    objective_fn: Callable[[Array], Array],
+    x0: Array,
+    learning_rate: float = 0.01,
+    momentum: float = 0.9,
+    tolerance: float = 1e-6,
+    max_iterations: int = 1000,
+) -> tuple[Array, SolverState]:
     """Nesterov accelerated gradient: gradient evaluated at the look-ahead point."""
     grad_fn = jax.grad(objective_fn)
 
@@ -262,10 +282,15 @@ def nesterov_momentum(objective_fn: Callable[[Array], Array], x0: Array,
     return x, SolverState(x=x, residual=g, iteration=k, converged=err < tolerance, error=err)
 
 
-def lbfgs_solver(objective_fn: Callable[[Array], Array], x0: Array, memory_size: int = 10,
-                 tolerance: float = 1e-6, max_iterations: int = 1000,
-                 line_search_steps: int = 20, armijo_c1: float = 1e-4
-                 ) -> Tuple[Array, SolverState]:
+def lbfgs_solver(
+    objective_fn: Callable[[Array], Array],
+    x0: Array,
+    memory_size: int = 10,
+    tolerance: float = 1e-6,
+    max_iterations: int = 1000,
+    line_search_steps: int = 20,
+    armijo_c1: float = 1e-4,
+) -> tuple[Array, SolverState]:
     """Limited-memory BFGS, fully expressed in ``lax`` control flow.
 
     The last ``memory_size`` curvature pairs ``(s, y)`` live in fixed-size
@@ -290,6 +315,7 @@ def lbfgs_solver(objective_fn: Callable[[Array], Array], x0: Array, memory_size:
 
     def two_loop(g, S, Y, rho, count, head):
         """Compute ``-H g`` from the circular history (most recent pair last)."""
+
         # Iterate over the `count` valid slots from newest to oldest.
         def backward(i, carry):
             q, alphas = carry
@@ -304,9 +330,11 @@ def lbfgs_solver(objective_fn: Callable[[Array], Array], x0: Array, memory_size:
 
         # Initial Hessian scaling gamma = s.y / y.y from the newest pair.
         newest = (head - 1) % m
-        gamma = jnp.where(count > 0,
-                          jnp.dot(S[newest], Y[newest]) / jnp.maximum(jnp.dot(Y[newest], Y[newest]), 1e-30),
-                          1.0)
+        gamma = jnp.where(
+            count > 0,
+            jnp.dot(S[newest], Y[newest]) / jnp.maximum(jnp.dot(Y[newest], Y[newest]), 1e-30),
+            1.0,
+        )
         r = gamma * q
 
         def forward(i, r):
@@ -354,15 +382,29 @@ def lbfgs_solver(objective_fn: Callable[[Array], Array], x0: Array, memory_size:
 
         def push(args):
             S, Y, rho, count, head = args
-            return (S.at[head].set(s), Y.at[head].set(y), rho.at[head].set(1.0 / sy),
-                    jnp.minimum(count + 1, m), (head + 1) % m)
+            return (
+                S.at[head].set(s),
+                Y.at[head].set(y),
+                rho.at[head].set(1.0 / sy),
+                jnp.minimum(count + 1, m),
+                (head + 1) % m,
+            )
 
         S, Y, rho, count, head = lax.cond(accept, push, lambda a: a, (S, Y, rho, count, head))
         return x_new, f_new, g_new, S, Y, rho, count, head, k + 1
 
     f0, g0 = value_and_grad(x0)
-    init = (x0, f0, g0, jnp.zeros((m, n), x0.dtype), jnp.zeros((m, n), x0.dtype),
-            jnp.zeros(m, x0.dtype), jnp.int32(0), jnp.int32(0), jnp.int32(0))
+    init = (
+        x0,
+        f0,
+        g0,
+        jnp.zeros((m, n), x0.dtype),
+        jnp.zeros((m, n), x0.dtype),
+        jnp.zeros(m, x0.dtype),
+        jnp.int32(0),
+        jnp.int32(0),
+        jnp.int32(0),
+    )
     x, _, g, *_, k = lax.while_loop(cond, body, init)
     err = jnp.linalg.norm(g)
     return x, SolverState(x=x, residual=g, iteration=k, converged=err < tolerance, error=err)
@@ -372,9 +414,14 @@ def lbfgs_solver(objective_fn: Callable[[Array], Array], x0: Array, memory_size:
 # Eigenvalue methods
 # ---------------------------------------------------------------------------
 
-def eigenvalue_power_method(A: LinearOperator, max_iterations: int = 100, tolerance: float = 1e-6,
-                            v0: Optional[Array] = None, n: Optional[int] = None
-                            ) -> Tuple[Array, Array]:
+
+def eigenvalue_power_method(
+    A: LinearOperator,
+    max_iterations: int = 100,
+    tolerance: float = 1e-6,
+    v0: Array | None = None,
+    n: int | None = None,
+) -> tuple[Array, Array]:
     """Power iteration for the dominant eigenpair.
 
     Converges at rate ``|lambda_2 / lambda_1|``; the Rayleigh quotient
@@ -411,9 +458,13 @@ def eigenvalue_power_method(A: LinearOperator, max_iterations: int = 100, tolera
     return lam, v
 
 
-def lanczos_algorithm(A: LinearOperator, num_iterations: int, starting_vector: Optional[Array] = None,
-                      n: Optional[int] = None, reorthogonalize: bool = True
-                      ) -> Tuple[Array, Array]:
+def lanczos_algorithm(
+    A: LinearOperator,
+    num_iterations: int,
+    starting_vector: Array | None = None,
+    n: int | None = None,
+    reorthogonalize: bool = True,
+) -> tuple[Array, Array]:
     """Lanczos tridiagonalisation ``Q^T A Q = T`` for symmetric ``A``.
 
     The eigenvalues of the small tridiagonal ``T`` (Ritz values) approximate
@@ -452,7 +503,9 @@ def lanczos_algorithm(A: LinearOperator, num_iterations: int, starting_vector: O
             v = v - Q @ ((Q.T @ v) * mask)
         b = jnp.linalg.norm(v)
         q_next = v / jnp.maximum(b, jnp.finfo(v.dtype).tiny)
-        Q = lax.cond(j + 1 < k, lambda Q: Q.at[:, jnp.minimum(j + 1, k - 1)].set(q_next), lambda Q: Q, Q)
+        Q = lax.cond(
+            j + 1 < k, lambda Q: Q.at[:, jnp.minimum(j + 1, k - 1)].set(q_next), lambda Q: Q, Q
+        )
         return Q, alpha.at[j].set(a), beta.at[j].set(b)
 
     Q, alpha, beta = lax.fori_loop(0, k, step, (Q0, alpha0, beta0))

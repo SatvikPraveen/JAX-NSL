@@ -19,19 +19,21 @@ are worth knowing because a lot of existing code uses ``pmap``.
 from __future__ import annotations
 
 import functools
-from typing import Any, Callable, Dict, Iterable, Optional, Tuple
+from collections.abc import Callable, Iterable
+from typing import Any
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 from jax import lax, pmap
-from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
+from jax.sharding import Mesh, NamedSharding
+from jax.sharding import PartitionSpec as P
 
 Array = jax.Array
-Batch = Dict[str, Array]
+Batch = dict[str, Array]
 
 
-def replicate_params(params: Any, num_devices: Optional[int] = None) -> Any:
+def replicate_params(params: Any, num_devices: int | None = None) -> Any:
     """Broadcast every leaf to ``(num_devices, ...)`` with slice ``i`` living on device ``i``.
 
     This is the layout ``pmap`` expects.  It is expressed with a one-axis
@@ -43,7 +45,9 @@ def replicate_params(params: Any, num_devices: Optional[int] = None) -> Any:
     devices = np.array(jax.local_devices()[:num_devices])
     sharding = NamedSharding(Mesh(devices, ("devices",)), P("devices"))
     return jax.tree_util.tree_map(
-        lambda x: jax.device_put(jnp.broadcast_to(x, (num_devices,) + jnp.shape(x)), sharding), params)
+        lambda x: jax.device_put(jnp.broadcast_to(x, (num_devices,) + jnp.shape(x)), sharding),
+        params,
+    )
 
 
 def unreplicate_params(replicated: Any) -> Any:
@@ -51,7 +55,7 @@ def unreplicate_params(replicated: Any) -> Any:
     return jax.tree_util.tree_map(lambda x: x[0], replicated)
 
 
-def shard_batch(batch: Any, num_devices: Optional[int] = None) -> Any:
+def shard_batch(batch: Any, num_devices: int | None = None) -> Any:
     """Reshape leaves ``(B, ...) -> (num_devices, B // num_devices, ...)``."""
     if num_devices is None:
         num_devices = jax.local_device_count()
@@ -83,8 +87,10 @@ def device_get(replicated: Any) -> Any:
 # Training steps
 # ---------------------------------------------------------------------------
 
-def data_parallel_step(loss_fn: Callable[[Any, Batch], Array], params: Any, batch: Batch,
-                       lr: float = 0.01) -> Tuple[Any, Array]:
+
+def data_parallel_step(
+    loss_fn: Callable[[Any, Batch], Array], params: Any, batch: Batch, lr: float = 0.01
+) -> tuple[Any, Array]:
     """One synchronous SGD step with gradients averaged across devices.
 
     ``loss_fn`` and ``lr`` are static (a Python callable / float cannot be a
@@ -92,6 +98,7 @@ def data_parallel_step(loss_fn: Callable[[Any, Batch], Array], params: Any, batc
     Returns ``(new_params, per_device_loss)`` where the new params are again
     replicated (identical on every device).
     """
+
     @functools.partial(pmap, axis_name="batch", static_broadcasted_argnums=(0, 3))
     def step(loss_fn, params, batch, lr):
         loss, grads = jax.value_and_grad(loss_fn)(params, batch)
@@ -102,9 +109,11 @@ def data_parallel_step(loss_fn: Callable[[Any, Batch], Array], params: Any, batc
     return step(loss_fn, params, batch, lr)
 
 
-def create_pmap_train_step(forward_fn: Callable, loss_fn: Callable, optimizer_update: Callable,
-                           axis_name: str = "batch") -> Callable:
+def create_pmap_train_step(
+    forward_fn: Callable, loss_fn: Callable, optimizer_update: Callable, axis_name: str = "batch"
+) -> Callable:
     """Pmapped ``step(opt_state, batch) -> (opt_state, metrics)`` with gradient all-reduce."""
+
     @functools.partial(pmap, axis_name=axis_name)
     def step(opt_state, batch):
         def loss_and_metrics(params):
@@ -121,8 +130,11 @@ def create_pmap_train_step(forward_fn: Callable, loss_fn: Callable, optimizer_up
     return step
 
 
-def parallel_eval_step(forward_fn: Callable, loss_fn: Callable, axis_name: str = "batch") -> Callable:
+def parallel_eval_step(
+    forward_fn: Callable, loss_fn: Callable, axis_name: str = "batch"
+) -> Callable:
     """Pmapped ``eval(params, batch) -> metrics`` averaged over devices."""
+
     @functools.partial(pmap, axis_name=axis_name)
     def step(params, batch):
         preds = forward_fn(params, batch["inputs"], training=False)
@@ -133,8 +145,12 @@ def parallel_eval_step(forward_fn: Callable, loss_fn: Callable, axis_name: str =
     return step
 
 
-def parallel_train_epoch(opt_state: Any, train_loader: Iterable[Batch], train_step: Callable,
-                         num_devices: Optional[int] = None) -> Tuple[Any, Dict[str, float]]:
+def parallel_train_epoch(
+    opt_state: Any,
+    train_loader: Iterable[Batch],
+    train_step: Callable,
+    num_devices: int | None = None,
+) -> tuple[Any, dict[str, float]]:
     """Replicate ``opt_state``, run a pmapped step over each batch, unreplicate at the end."""
     if num_devices is None:
         num_devices = jax.local_device_count()
@@ -143,7 +159,11 @@ def parallel_train_epoch(opt_state: Any, train_loader: Iterable[Batch], train_st
     for batch in train_loader:
         state, metrics = train_step(state, shard_batch(batch, num_devices))
         collected.append(unreplicate_params(metrics))
-    avg = {k: float(jnp.mean(jnp.stack([m[k] for m in collected]))) for k in collected[0]} if collected else {}
+    avg = (
+        {k: float(jnp.mean(jnp.stack([m[k] for m in collected]))) for k in collected[0]}
+        if collected
+        else {}
+    )
     return unreplicate_params(state), avg
 
 
@@ -151,7 +171,7 @@ def create_parallel_inference_fn(forward_fn: Callable) -> Callable:
     """Batched inference across devices with automatic padding of ragged batches."""
     infer = pmap(lambda params, x: forward_fn(params, x, training=False), axis_name="batch")
 
-    def inference_fn(params: Any, inputs: Array, num_devices: Optional[int] = None) -> Array:
+    def inference_fn(params: Any, inputs: Array, num_devices: int | None = None) -> Array:
         if num_devices is None:
             num_devices = jax.local_device_count()
         n = inputs.shape[0]
@@ -165,7 +185,9 @@ def create_parallel_inference_fn(forward_fn: Callable) -> Callable:
     return inference_fn
 
 
-def estimate_memory_usage(params: Any, batch_size: int, num_devices: Optional[int] = None) -> Dict[str, float]:
+def estimate_memory_usage(
+    params: Any, batch_size: int, num_devices: int | None = None
+) -> dict[str, float]:
     """Rough memory budget (MB) for replicated data-parallel training with an Adam-like optimiser."""
     if num_devices is None:
         num_devices = jax.local_device_count()
