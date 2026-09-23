@@ -314,3 +314,50 @@ def _smooth_abs_bwd(res: Tuple, g: jnp.ndarray) -> Tuple[jnp.ndarray, None]:
 
 
 smooth_abs_vjp.defvjp(_smooth_abs_fwd, _smooth_abs_bwd)
+
+# ---------------------------------------------------------------------------
+# Gradient-shaping identities
+# ---------------------------------------------------------------------------
+
+@custom_vjp
+def gradient_reversal(x: jnp.ndarray, scale: float = 1.0) -> jnp.ndarray:
+    """Identity in the forward pass; multiplies the gradient by ``-scale``.
+
+    The gradient reversal layer from domain-adversarial training (DANN):
+    the feature extractor is trained to *maximise* the domain classifier's
+    loss simply by flipping the sign of the gradient flowing back.
+    """
+    return x
+
+
+def _gradient_reversal_fwd(x, scale):
+    return x, scale
+
+
+def _gradient_reversal_bwd(scale, g):
+    return -scale * g, None
+
+
+gradient_reversal.defvjp(_gradient_reversal_fwd, _gradient_reversal_bwd)
+
+
+@custom_vjp
+def ste_round(x: jnp.ndarray) -> jnp.ndarray:
+    """``round(x)`` in the forward pass with an identity gradient.
+
+    The straight-through estimator used for quantisation-aware training:
+    ``round`` has zero derivative almost everywhere, so we pretend it is the
+    identity when back-propagating.
+    """
+    return jnp.round(x)
+
+
+def _ste_round_fwd(x):
+    return jnp.round(x), None
+
+
+def _ste_round_bwd(_, g):
+    return (g,)
+
+
+ste_round.defvjp(_ste_round_fwd, _ste_round_bwd)
