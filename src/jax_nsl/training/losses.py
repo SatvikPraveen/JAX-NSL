@@ -1,379 +1,194 @@
 # File location: src/jax_nsl/training/losses.py
 
 """
-Loss functions with numerical stability.
+Loss functions that take *logits* where possible and reduce consistently.
 
-This module implements common loss functions used in deep learning
-with emphasis on numerical stability and efficiency.
+All losses accept ``reduction`` in ``{'mean', 'sum', 'none'}`` and, where it
+makes sense, per-example ``weights``.  Working with logits (rather than
+probabilities) lets us use the stable log-softmax and avoids ``log(0)``.
 """
+
+from __future__ import annotations
+
+from typing import Any, Callable, Optional, Union
 
 import jax
 import jax.numpy as jnp
-from typing import Optional, Union
-from ..core.numerics import safe_log, logsumexp_stable, softmax_stable
+
+from jax_nsl.core.numerics import log_softmax_stable, safe_log
+
+Array = jax.Array
 
 
-def cross_entropy_loss(logits: jnp.ndarray,
-                      labels: jnp.ndarray,
-                      reduction: str = 'mean',
-                      label_smoothing: float = 0.0) -> jnp.ndarray:
-    """Cross-entropy loss with label smoothing.
-    
-    Args:
-        logits: Model predictions (batch_size, num_classes)
-        labels: True labels (batch_size,) for sparse or (batch_size, num_classes) for one-hot
-        reduction: 'mean', 'sum', or 'none'
-        label_smoothing: Label smoothing factor
-        
-    Returns:
-        Cross-entropy loss
-    """
-    if labels.ndim == 1:
-        # Sparse labels - convert to one-hot
-        num_classes = logits.shape[-1]
-        labels_one_hot = jax.nn.one_hot(labels, num_classes)
-    else:
-        labels_one_hot = labels
-    
-    # Apply label smoothing
-    if label_smoothing > 0:
-        num_classes = labels_one_hot.shape[-1]
-        smooth_labels = (1 - label_smoothing) * labels_one_hot + \
-                       label_smoothing / num_classes
-    else:
-        smooth_labels = labels_one_hot
-    
-    # Compute log probabilities using logsumexp for stability
-    log_probs = logits - logsumexp_stable(logits, axis=-1, keepdims=True)
-    
-    # Cross-entropy loss
-    loss = -jnp.sum(smooth_labels * log_probs, axis=-1)
-    
-    if reduction == 'mean':
+def _reduce(loss: Array, reduction: str, weights: Optional[Array] = None) -> Array:
+    if weights is not None:
+        loss = loss * weights
+    if reduction == "mean":
+        if weights is not None:
+            return jnp.sum(loss) / jnp.maximum(jnp.sum(weights), 1e-12)
         return jnp.mean(loss)
-    elif reduction == 'sum':
+    if reduction == "sum":
         return jnp.sum(loss)
-    else:
+    if reduction == "none":
         return loss
+    raise ValueError(f"Unknown reduction {reduction!r}")
 
 
-def binary_cross_entropy(logits: jnp.ndarray,
-                        labels: jnp.ndarray,
-                        reduction: str = 'mean',
-                        pos_weight: Optional[float] = None) -> jnp.ndarray:
-    """Binary cross-entropy loss.
-    
+def _one_hot_like(labels: Array, logits: Array) -> Array:
+    if labels.ndim == logits.ndim - 1:
+        return jax.nn.one_hot(labels, logits.shape[-1], dtype=logits.dtype)
+    return labels.astype(logits.dtype)
+
+
+# ---------------------------------------------------------------------------
+# Classification
+# ---------------------------------------------------------------------------
+
+def cross_entropy_loss(logits: Array, labels: Array, reduction: str = "mean",
+                       label_smoothing: float = 0.0, weights: Optional[Array] = None) -> Array:
+    """Softmax cross-entropy from logits with optional label smoothing.
+
     Args:
-        logits: Model predictions (any shape)
-        labels: Binary labels (same shape as logits)
-        reduction: 'mean', 'sum', or 'none'
-        pos_weight: Weight for positive class
-        
-    Returns:
-        Binary cross-entropy loss
+        logits: ``(..., num_classes)``.
+        labels: Integer classes ``(...)`` or one-hot/soft targets ``(..., num_classes)``.
+        reduction: ``'mean'``, ``'sum'`` or ``'none'``.
+        label_smoothing: Mix targets with the uniform distribution:
+            ``(1 - eps) * onehot + eps / K``.
+        weights: Optional per-example weights (``'mean'`` normalises by their sum).
     """
-    # Use stable sigmoid cross-entropy
-    max_val = jnp.maximum(-logits, 0)
-    loss = logits - logits * labels + max_val + \
-           jnp.log(jnp.exp(-max_val) + jnp.exp(-logits - max_val))
-    
-    # Apply positive class weighting
+    targets = _one_hot_like(labels, logits)
+    if label_smoothing > 0.0:
+        k = logits.shape[-1]
+        targets = (1.0 - label_smoothing) * targets + label_smoothing / k
+    loss = -jnp.sum(targets * log_softmax_stable(logits), axis=-1)
+    return _reduce(loss, reduction, weights)
+
+
+def binary_cross_entropy(logits: Array, labels: Array, reduction: str = "mean",
+                         pos_weight: Optional[float] = None) -> Array:
+    """Sigmoid cross-entropy from logits, ``max(x, 0) - x y + log(1 + exp(-|x|))``.
+
+    That rearrangement never evaluates ``exp`` of a large positive number.
+    """
+    loss = jnp.maximum(logits, 0.0) - logits * labels + jnp.log1p(jnp.exp(-jnp.abs(logits)))
     if pos_weight is not None:
-        loss = loss * (pos_weight * labels + (1 - labels))
-    
-    if reduction == 'mean':
-        return jnp.mean(loss)
-    elif reduction == 'sum':
-        return jnp.sum(loss)
-    else:
-        return loss
+        loss = loss * (pos_weight * labels + (1.0 - labels))
+    return _reduce(loss, reduction)
 
 
-def mse_loss(predictions: jnp.ndarray,
-            targets: jnp.ndarray,
-            reduction: str = 'mean') -> jnp.ndarray:
-    """Mean squared error loss.
-    
-    Args:
-        predictions: Model predictions
-        targets: Target values
-        reduction: 'mean', 'sum', or 'none'
-        
-    Returns:
-        MSE loss
+def focal_loss(logits: Array, labels: Array, alpha: Union[float, Array] = 0.25, gamma: float = 2.0,
+               reduction: str = "mean") -> Array:
+    """Multi-class focal loss ``-alpha_t (1 - p_t)^gamma log p_t``.
+
+    ``alpha`` may be a scalar (applied to every class) or a per-class vector;
+    it is looked up for the *true* class only.  ``p_t`` comes from the stable
+    log-softmax so that confident predictions do not underflow to ``log 0``.
     """
-    loss = (predictions - targets) ** 2
-    
-    if reduction == 'mean':
-        return jnp.mean(loss)
-    elif reduction == 'sum':
-        return jnp.sum(loss)
-    else:
-        return loss
+    targets = _one_hot_like(labels, logits)
+    log_p = log_softmax_stable(logits)
+    log_p_t = jnp.sum(targets * log_p, axis=-1)
+    p_t = jnp.exp(log_p_t)
+    alpha_t = jnp.sum(jnp.broadcast_to(jnp.asarray(alpha, logits.dtype), logits.shape[-1:]) * targets,
+                      axis=-1)
+    loss = -alpha_t * (1.0 - p_t) ** gamma * log_p_t
+    return _reduce(loss, reduction)
 
 
-def huber_loss(predictions: jnp.ndarray,
-              targets: jnp.ndarray,
-              delta: float = 1.0,
-              reduction: str = 'mean') -> jnp.ndarray:
-    """Huber loss (smooth L1 loss).
-    
-    Args:
-        predictions: Model predictions
-        targets: Target values
-        delta: Threshold for switching between quadratic and linear loss
-        reduction: 'mean', 'sum', or 'none'
-        
-    Returns:
-        Huber loss
+def kl_divergence(p_logits: Array, q_logits: Array, reduction: str = "mean") -> Array:
+    """``KL(p || q)`` between the softmax distributions of two logit arrays."""
+    log_p = log_softmax_stable(p_logits)
+    log_q = log_softmax_stable(q_logits)
+    kl = jnp.sum(jnp.exp(log_p) * (log_p - log_q), axis=-1)
+    return _reduce(kl, reduction)
+
+
+def dice_loss(probabilities: Array, targets: Array, smooth: float = 1.0, reduction: str = "mean") -> Array:
+    """``1 - 2|A n B| / (|A| + |B|)`` per example over flattened spatial dims (segmentation)."""
+    p = probabilities.reshape(probabilities.shape[0], -1)
+    t = targets.reshape(targets.shape[0], -1).astype(p.dtype)
+    intersection = jnp.sum(p * t, axis=1)
+    union = jnp.sum(p, axis=1) + jnp.sum(t, axis=1)
+    return _reduce(1.0 - (2.0 * intersection + smooth) / (union + smooth), reduction)
+
+
+# ---------------------------------------------------------------------------
+# Regression
+# ---------------------------------------------------------------------------
+
+def mse_loss(predictions: Array, targets: Array, reduction: str = "mean") -> Array:
+    """Mean squared error."""
+    return _reduce((predictions - targets) ** 2, reduction)
+
+
+def huber_loss(predictions: Array, targets: Array, delta: float = 1.0, reduction: str = "mean") -> Array:
+    """Quadratic for ``|r| <= delta``, linear beyond (robust to outliers)."""
+    r = jnp.abs(predictions - targets)
+    loss = jnp.where(r <= delta, 0.5 * r**2, delta * (r - 0.5 * delta))
+    return _reduce(loss, reduction)
+
+
+def smooth_l1_loss(predictions: Array, targets: Array, beta: float = 1.0, reduction: str = "mean") -> Array:
+    """Huber loss divided by ``beta`` (the object-detection convention)."""
+    r = jnp.abs(predictions - targets)
+    loss = jnp.where(r < beta, 0.5 * r**2 / beta, r - 0.5 * beta)
+    return _reduce(loss, reduction)
+
+
+def quantile_loss(predictions: Array, targets: Array, quantile: float = 0.5, reduction: str = "mean") -> Array:
+    """Pinball loss; minimised by the ``quantile``-th conditional quantile."""
+    r = targets - predictions
+    loss = jnp.maximum(quantile * r, (quantile - 1.0) * r)
+    return _reduce(loss, reduction)
+
+
+def mean_squared_residual(residual_fn: Callable[..., Array], *args: Any) -> Array:
+    """``mean(residual_fn(*args) ** 2)`` - the physics-informed (PDE residual) loss."""
+    return jnp.mean(jnp.square(residual_fn(*args)))
+
+
+# ---------------------------------------------------------------------------
+# Metric learning
+# ---------------------------------------------------------------------------
+
+def contrastive_loss(embeddings1: Array, embeddings2: Array, labels: Array, margin: float = 1.0,
+                     reduction: str = "mean") -> Array:
+    """Hadsell et al. pairwise loss: pull similar pairs together, push others past ``margin``."""
+    d = jnp.linalg.norm(embeddings1 - embeddings2, axis=-1)
+    loss = 0.5 * (labels * d**2 + (1.0 - labels) * jnp.maximum(0.0, margin - d) ** 2)
+    return _reduce(loss, reduction)
+
+
+def triplet_loss(anchor: Array, positive: Array, negative: Array, margin: float = 1.0,
+                 reduction: str = "mean") -> Array:
+    """``max(0, d(a, p) - d(a, n) + margin)``."""
+    d_pos = jnp.linalg.norm(anchor - positive, axis=-1)
+    d_neg = jnp.linalg.norm(anchor - negative, axis=-1)
+    return _reduce(jnp.maximum(0.0, d_pos - d_neg + margin), reduction)
+
+
+def cosine_similarity_loss(embeddings1: Array, embeddings2: Array, labels: Array,
+                           reduction: str = "mean") -> Array:
+    """Squared error between the cosine similarity and a target in ``[-1, 1]``."""
+    n1 = embeddings1 / (jnp.linalg.norm(embeddings1, axis=-1, keepdims=True) + 1e-8)
+    n2 = embeddings2 / (jnp.linalg.norm(embeddings2, axis=-1, keepdims=True) + 1e-8)
+    return _reduce((jnp.sum(n1 * n2, axis=-1) - labels) ** 2, reduction)
+
+
+def info_nce_loss(queries: Array, keys: Array, temperature: float = 0.1) -> Array:
+    """InfoNCE / NT-Xent: each query's positive is the key at the same index.
+
+    Uses the stable log-softmax over the similarity matrix; ``safe_log`` is
+    not needed because we never form probabilities explicitly.
     """
-    residual = jnp.abs(predictions - targets)
-    quadratic = 0.5 * residual ** 2
-    linear = delta * (residual - 0.5 * delta)
-    
-    loss = jnp.where(residual <= delta, quadratic, linear)
-    
-    if reduction == 'mean':
-        return jnp.mean(loss)
-    elif reduction == 'sum':
-        return jnp.sum(loss)
-    else:
-        return loss
+    q = queries / (jnp.linalg.norm(queries, axis=-1, keepdims=True) + 1e-8)
+    k = keys / (jnp.linalg.norm(keys, axis=-1, keepdims=True) + 1e-8)
+    logits = q @ k.T / temperature
+    labels = jnp.arange(queries.shape[0])
+    return cross_entropy_loss(logits, labels)
 
 
-def focal_loss(logits: jnp.ndarray,
-              labels: jnp.ndarray,
-              alpha: float = 1.0,
-              gamma: float = 2.0,
-              reduction: str = 'mean') -> jnp.ndarray:
-    """Focal loss for addressing class imbalance.
-    
-    Args:
-        logits: Model predictions (batch_size, num_classes)
-        labels: True labels (batch_size,)
-        alpha: Weighting factor for rare class
-        gamma: Focusing parameter
-        reduction: 'mean', 'sum', or 'none'
-        
-    Returns:
-        Focal loss
-    """
-    # Convert to probabilities
-    probs = softmax_stable(logits, axis=-1)
-    
-    # Get probabilities for true classes
-    if labels.ndim == 1:
-        # Sparse labels
-        labels_one_hot = jax.nn.one_hot(labels, logits.shape[-1])
-    else:
-        labels_one_hot = labels
-    
-    p_t = jnp.sum(probs * labels_one_hot, axis=-1)
-    
-    # Focal loss computation
-    alpha_t = alpha * labels_one_hot + (1 - alpha) * (1 - labels_one_hot)
-    alpha_t = jnp.sum(alpha_t, axis=-1)
-    
-    focal_weight = alpha_t * (1 - p_t) ** gamma
-    loss = -focal_weight * safe_log(p_t)
-    
-    if reduction == 'mean':
-        return jnp.mean(loss)
-    elif reduction == 'sum':
-        return jnp.sum(loss)
-    else:
-        return loss
-
-
-def contrastive_loss(embeddings1: jnp.ndarray,
-                    embeddings2: jnp.ndarray,
-                    labels: jnp.ndarray,
-                    margin: float = 1.0,
-                    reduction: str = 'mean') -> jnp.ndarray:
-    """Contrastive loss for similarity learning.
-    
-    Args:
-        embeddings1: First set of embeddings
-        embeddings2: Second set of embeddings
-        labels: Binary labels (1 for similar, 0 for dissimilar)
-        margin: Margin for dissimilar pairs
-        reduction: 'mean', 'sum', or 'none'
-        
-    Returns:
-        Contrastive loss
-    """
-    # Euclidean distance
-    distances = jnp.linalg.norm(embeddings1 - embeddings2, axis=-1)
-    
-    # Contrastive loss
-    similar_loss = labels * distances ** 2
-    dissimilar_loss = (1 - labels) * jnp.maximum(0, margin - distances) ** 2
-    
-    loss = 0.5 * (similar_loss + dissimilar_loss)
-    
-    if reduction == 'mean':
-        return jnp.mean(loss)
-    elif reduction == 'sum':
-        return jnp.sum(loss)
-    else:
-        return loss
-
-
-def triplet_loss(anchor: jnp.ndarray,
-                positive: jnp.ndarray,
-                negative: jnp.ndarray,
-                margin: float = 1.0,
-                reduction: str = 'mean') -> jnp.ndarray:
-    """Triplet loss for metric learning.
-    
-    Args:
-        anchor: Anchor embeddings
-        positive: Positive embeddings
-        negative: Negative embeddings
-        margin: Margin between positive and negative distances
-        reduction: 'mean', 'sum', or 'none'
-        
-    Returns:
-        Triplet loss
-    """
-    # Compute distances
-    pos_dist = jnp.linalg.norm(anchor - positive, axis=-1)
-    neg_dist = jnp.linalg.norm(anchor - negative, axis=-1)
-    
-    # Triplet loss
-    loss = jnp.maximum(0, pos_dist - neg_dist + margin)
-    
-    if reduction == 'mean':
-        return jnp.mean(loss)
-    elif reduction == 'sum':
-        return jnp.sum(loss)
-    else:
-        return loss
-
-
-def kl_divergence(p_logits: jnp.ndarray,
-                 q_logits: jnp.ndarray,
-                 reduction: str = 'mean') -> jnp.ndarray:
-    """Kullback-Leibler divergence between two distributions.
-    
-    Args:
-        p_logits: Logits for distribution p
-        q_logits: Logits for distribution q
-        reduction: 'mean', 'sum', or 'none'
-        
-    Returns:
-        KL divergence D(p||q)
-    """
-    # Convert to log probabilities
-    log_p = p_logits - logsumexp_stable(p_logits, axis=-1, keepdims=True)
-    log_q = q_logits - logsumexp_stable(q_logits, axis=-1, keepdims=True)
-    
-    # KL divergence
-    kl_div = jnp.sum(jnp.exp(log_p) * (log_p - log_q), axis=-1)
-    
-    if reduction == 'mean':
-        return jnp.mean(kl_div)
-    elif reduction == 'sum':
-        return jnp.sum(kl_div)
-    else:
-        return kl_div
-
-
-def cosine_similarity_loss(embeddings1: jnp.ndarray,
-                          embeddings2: jnp.ndarray,
-                          labels: jnp.ndarray,
-                          reduction: str = 'mean') -> jnp.ndarray:
-    """Cosine similarity loss.
-    
-    Args:
-        embeddings1: First set of embeddings
-        embeddings2: Second set of embeddings
-        labels: Target similarity scores (-1 to 1)
-        reduction: 'mean', 'sum', or 'none'
-        
-    Returns:
-        Cosine similarity loss
-    """
-    # Normalize embeddings
-    norm1 = jnp.linalg.norm(embeddings1, axis=-1, keepdims=True)
-    norm2 = jnp.linalg.norm(embeddings2, axis=-1, keepdims=True)
-    
-    embeddings1_norm = embeddings1 / (norm1 + 1e-8)
-    embeddings2_norm = embeddings2 / (norm2 + 1e-8)
-    
-    # Cosine similarity
-    cosine_sim = jnp.sum(embeddings1_norm * embeddings2_norm, axis=-1)
-    
-    # Mean squared error with target similarity
-    loss = (cosine_sim - labels) ** 2
-    
-    if reduction == 'mean':
-        return jnp.mean(loss)
-    elif reduction == 'sum':
-        return jnp.sum(loss)
-    else:
-        return loss
-
-
-def smooth_l1_loss(predictions: jnp.ndarray,
-                  targets: jnp.ndarray,
-                  beta: float = 1.0,
-                  reduction: str = 'mean') -> jnp.ndarray:
-    """Smooth L1 loss (used in object detection).
-    
-    Args:
-        predictions: Model predictions
-        targets: Target values
-        beta: Threshold for switching between L1 and L2 loss
-        reduction: 'mean', 'sum', or 'none'
-        
-    Returns:
-        Smooth L1 loss
-    """
-    diff = jnp.abs(predictions - targets)
-    loss = jnp.where(
-        diff < beta,
-        0.5 * diff ** 2 / beta,
-        diff - 0.5 * beta
-    )
-    
-    if reduction == 'mean':
-        return jnp.mean(loss)
-    elif reduction == 'sum':
-        return jnp.sum(loss)
-    else:
-        return loss
-
-
-def dice_loss(predictions: jnp.ndarray,
-             targets: jnp.ndarray,
-             smooth: float = 1.0,
-             reduction: str = 'mean') -> jnp.ndarray:
-    """Dice loss for segmentation tasks.
-    
-    Args:
-        predictions: Model predictions (probabilities)
-        targets: Binary target masks
-        smooth: Smoothing factor to avoid division by zero
-        reduction: 'mean', 'sum', or 'none'
-        
-    Returns:
-        Dice loss
-    """
-    # Flatten spatial dimensions
-    pred_flat = predictions.reshape(predictions.shape[0], -1)
-    target_flat = targets.reshape(targets.shape[0], -1)
-    
-    # Compute Dice coefficient
-    intersection = jnp.sum(pred_flat * target_flat, axis=1)
-    union = jnp.sum(pred_flat, axis=1) + jnp.sum(target_flat, axis=1)
-    
-    dice_coeff = (2.0 * intersection + smooth) / (union + smooth)
-    loss = 1.0 - dice_coeff
-    
-    if reduction == 'mean':
-        return jnp.mean(loss)
-    elif reduction == 'sum':
-        return jnp.sum(loss)
-    else:
-        return loss
+__all__ = [
+    "cross_entropy_loss", "binary_cross_entropy", "focal_loss", "kl_divergence", "dice_loss",
+    "mse_loss", "huber_loss", "smooth_l1_loss", "quantile_loss", "mean_squared_residual",
+    "contrastive_loss", "triplet_loss", "cosine_similarity_loss", "info_nce_loss", "safe_log",
+]

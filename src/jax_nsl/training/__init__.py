@@ -1,51 +1,81 @@
 # File location: src/jax_nsl/training/__init__.py
 
 """
-Training utilities: losses, optimizers, and training loops.
-
-This module provides implementations of common loss functions,
-optimization algorithms, and training loop patterns for neural networks.
+Training: losses, optimisers, schedules, and jitted training loops.
 """
 
-from .losses import *
-from .optimizers import *
-from .train_loop import *
+from .losses import (
+    binary_cross_entropy,
+    contrastive_loss,
+    cosine_similarity_loss,
+    cross_entropy_loss,
+    dice_loss,
+    focal_loss,
+    huber_loss,
+    info_nce_loss,
+    kl_divergence,
+    mean_squared_residual,
+    mse_loss,
+    quantile_loss,
+    smooth_l1_loss,
+    triplet_loss,
+)
+from .optimizers import (
+    AdaGradState,
+    AdamState,
+    MomentumState,
+    RMSPropState,
+    SGDState,
+    adagrad_optimizer,
+    adam_optimizer,
+    adamw_optimizer,
+    apply_optimizer,
+    clip_grads_by_global_norm,
+    create_learning_rate_schedule,
+    ema_update,
+    ema_update_debiased,
+    get_learning_rate,
+    lion_optimizer,
+    momentum_optimizer,
+    rmsprop_optimizer,
+    sgd_optimizer,
+)
+from .train_loop import (
+    TrainState,
+    accumulate_gradients,
+    cast_floating,
+    compute_metrics,
+    create_train_state,
+    evaluate_model,
+    evaluation_step,
+    load_checkpoint,
+    make_accumulating_train_step,
+    make_eval_step,
+    make_train_step,
+    save_checkpoint,
+    scaled_loss_and_grad,
+    split_into_microbatches,
+    train_epoch,
+    training_loop,
+    training_step,
+    with_mixed_precision,
+)
 
 __all__ = [
     # losses.py
-    "cross_entropy_loss",
-    "mse_loss",
-    "huber_loss",
-    "focal_loss",
-    "contrastive_loss",
-    "triplet_loss",
-    "kl_divergence",
-    "binary_cross_entropy",
-    "cosine_similarity_loss",
-    "smooth_l1_loss",
-    "dice_loss",
-
+    "cross_entropy_loss", "binary_cross_entropy", "focal_loss", "kl_divergence", "dice_loss",
+    "mse_loss", "huber_loss", "smooth_l1_loss", "quantile_loss", "mean_squared_residual",
+    "contrastive_loss", "triplet_loss", "cosine_similarity_loss", "info_nce_loss",
     # optimizers.py
-    "sgd_optimizer",
-    "momentum_optimizer",
-    "adam_optimizer",
-    "adamw_optimizer",
-    "rmsprop_optimizer",
-    "adagrad_optimizer",
-    "create_learning_rate_schedule",
-    "apply_optimizer",
-    "clip_grads_by_global_norm",
-    "get_learning_rate",
-
+    "SGDState", "MomentumState", "AdamState", "RMSPropState", "AdaGradState",
+    "sgd_optimizer", "momentum_optimizer", "adam_optimizer", "adamw_optimizer",
+    "rmsprop_optimizer", "adagrad_optimizer", "lion_optimizer", "apply_optimizer",
+    "clip_grads_by_global_norm", "ema_update", "ema_update_debiased",
+    "create_learning_rate_schedule", "get_learning_rate",
     # train_loop.py
-    "TrainState",
-    "create_train_state",
-    "training_step",
-    "evaluation_step",
-    "train_epoch",
-    "evaluate_model",
-    "training_loop",
-    "save_checkpoint",
-    "load_checkpoint",
-    "compute_metrics",
+    "TrainState", "create_train_state", "make_train_step", "make_eval_step", "training_step",
+    "evaluation_step", "accumulate_gradients", "split_into_microbatches",
+    "make_accumulating_train_step", "cast_floating", "with_mixed_precision",
+    "scaled_loss_and_grad", "train_epoch", "evaluate_model", "training_loop",
+    "save_checkpoint", "load_checkpoint", "compute_metrics",
 ]
