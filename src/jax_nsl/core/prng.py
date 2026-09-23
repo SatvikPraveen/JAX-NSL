@@ -1,293 +1,187 @@
 # File location: src/jax_nsl/core/prng.py
 
 """
-PRNG key handling and common patterns.
+PRNG key handling and parameter initialisers.
 
-This module provides utilities for managing JAX's pseudo-random number
-generation, including key splitting, sequences, and common patterns.
+JAX random numbers are *explicit*: every call takes a key, and you must split
+keys yourself to get independent streams.  :class:`PRNGSequence` packages the
+split-and-advance pattern; the initialisers compute fan-in/fan-out the same
+way :mod:`jax.nn.initializers` does (including convolution kernels).
 """
+
+from __future__ import annotations
+
+import math
+from collections.abc import Sequence
+from typing import Any, Dict, Iterator, List, Tuple, Union
 
 import jax
 import jax.numpy as jnp
 import jax.random as jr
 from jax import tree_util
-from typing import Any, Iterator, Tuple, Union, Optional, Dict
-from collections.abc import Sequence
+
+Array = jax.Array
+KeyLike = Union[int, Array]
+
+
+def as_key(seed: KeyLike) -> Array:
+    """Turn an int or an existing key into a key (typed or legacy is preserved)."""
+    if isinstance(seed, (int, jnp.integer)):
+        return jr.PRNGKey(int(seed))
+    return seed
 
 
 class PRNGSequence:
-    """Iterator that generates an infinite sequence of PRNG keys.
-    
-    Useful for situations where you need a stream of random keys
-    without explicitly managing key splitting.
-    
-    Example:
+    """An iterator of independent PRNG keys derived from one seed.
+
+    Example::
+
         rng = PRNGSequence(42)
-        key1 = next(rng)
-        key2 = next(rng) 
-        # keys are independent
+        w = jax.random.normal(next(rng), (3, 3))
+        b = jax.random.normal(next(rng), (3,))   # independent of w
     """
-    
-    def __init__(self, seed: Union[int, jax.Array]):
-        """Initialize PRNG sequence.
-        
-        Args:
-            seed: Initial seed or PRNGKey
-        """
-        if isinstance(seed, int):
-            self._key = jr.PRNGKey(seed)
-        else:
-            self._key = seed
-    
-    def __iter__(self) -> Iterator[jax.Array]:
+
+    def __init__(self, seed: KeyLike):
+        self._key = as_key(seed)
+
+    def __iter__(self) -> Iterator[Array]:
         return self
-    
-    def __next__(self) -> jax.Array:
-        """Get next PRNG key in sequence."""
+
+    def __next__(self) -> Array:
         self._key, subkey = jr.split(self._key)
         return subkey
-    
-    def split(self, num: int) -> jax.Array:
-        """Split into multiple keys at once.
-        
-        Args:
-            num: Number of keys to generate
-            
-        Returns:
-            Array of PRNG keys with shape (num, 2)
-        """
-        self._key, *subkeys = jr.split(self._key, num + 1)
-        return jnp.stack(subkeys)
-    
-    def fork(self, num: int) -> 'PRNGSequence':
-        """Create independent PRNG sequences.
-        
-        Args:
-            num: Number of independent sequences
-            
-        Returns:
-            List of independent PRNGSequence objects
-        """
-        keys = self.split(num)
-        return [PRNGSequence(key) for key in keys]
+
+    def split(self, num: int) -> Array:
+        """Return ``num`` fresh keys stacked along axis 0 and advance the state."""
+        keys = jr.split(self._key, num + 1)
+        self._key = keys[0]
+        return keys[1:]
+
+    def fork(self, num: int) -> List["PRNGSequence"]:
+        """Create ``num`` independent child sequences."""
+        return [PRNGSequence(k) for k in self.split(num)]
 
 
-def split_key_tree(key: jax.Array, tree_structure: Any) -> Any:
-    """Split a PRNG key according to pytree structure.
-    
-    Args:
-        key: Master PRNG key
-        tree_structure: PyTree defining the split structure
-        
-    Returns:
-        PyTree with same structure containing PRNG keys
-    """
-    leaves = tree_util.tree_leaves(tree_structure)
-    num_leaves = len(leaves)
-    
-    if num_leaves == 0:
+def split_key_tree(key: Array, tree_structure: Any) -> Any:
+    """Split ``key`` into one key per leaf of ``tree_structure`` (same structure)."""
+    leaves, treedef = tree_util.tree_flatten(tree_structure)
+    if not leaves:
         return tree_structure
-    
-    keys = jr.split(key, num_leaves)
-    return tree_util.tree_unflatten(
-        tree_util.tree_structure(tree_structure),
-        keys
-    )
+    return tree_util.tree_unflatten(treedef, list(jr.split(key, len(leaves))))
 
 
-def random_like(key: jax.Array, 
-                template: jax.Array, 
-                distribution: str = 'normal',
-                **kwargs) -> jax.Array:
-    """Generate random array with same shape/dtype as template.
-    
-    Args:
-        key: PRNG key
-        template: Template array for shape/dtype
-        distribution: Distribution name ('normal', 'uniform', 'bernoulli')
-        **kwargs: Distribution-specific parameters
-        
-    Returns:
-        Random array with same shape/dtype as template
-    """
-    shape = template.shape
-    dtype = template.dtype
-    
-    if distribution == 'normal':
-        arr = jr.normal(key, shape, dtype=dtype)
-        if 'scale' in kwargs:
-            arr = arr * kwargs['scale']
-        if 'loc' in kwargs:
-            arr = arr + kwargs['loc']
-        return arr
-    
-    elif distribution == 'uniform':
-        minval = kwargs.get('minval', 0.0)
-        maxval = kwargs.get('maxval', 1.0)
-        return jr.uniform(key, shape, dtype=dtype, minval=minval, maxval=maxval)
-    
-    elif distribution == 'bernoulli':
-        p = kwargs.get('p', 0.5)
-        return jr.bernoulli(key, p, shape).astype(dtype)
-    
-    elif distribution == 'categorical':
-        logits = kwargs.get('logits')
-        if logits is None:
-            raise ValueError("categorical distribution requires 'logits' parameter")
-        return jr.categorical(key, logits, shape=shape).astype(dtype)
-    
-    else:
-        raise ValueError(f"Unknown distribution: {distribution}")
-
-
-def make_rng_state(seed: Union[int, jax.Array], 
-                   names: Sequence[str]) -> Dict[str, jax.Array]:
-    """Create dictionary of named PRNG keys.
-    
-    Args:
-        seed: Master seed
-        names: Names for the different RNG streams
-        
-    Returns:
-        Dictionary mapping names to PRNG keys
-    """
-    if isinstance(seed, int):
-        master_key = jr.PRNGKey(seed)
-    else:
-        master_key = seed
-    
-    keys = jr.split(master_key, len(names))
+def make_rng_state(seed: KeyLike, names: Sequence[str]) -> Dict[str, Array]:
+    """Named independent streams, e.g. ``{'params': k1, 'dropout': k2}``."""
+    keys = jr.split(as_key(seed), len(names))
     return dict(zip(names, keys))
 
 
-# Common initialization patterns
-def glorot_uniform_init(key: jax.Array, 
-                       shape: Tuple[int, ...], 
-                       dtype: jnp.dtype = jnp.float32,
-                       in_axis: int = -2,
-                       out_axis: int = -1) -> jax.Array:
-    """Glorot (Xavier) uniform initialization.
-    
-    Args:
-        key: PRNG key
-        shape: Parameter shape
-        dtype: Parameter dtype
-        in_axis: Input dimension axis
-        out_axis: Output dimension axis
-        
-    Returns:
-        Initialized parameter array
+def random_like(key: Array, template: Array, distribution: str = "normal", **kwargs) -> Array:
+    """Sample an array with the shape/dtype of ``template``.
+
+    Supported distributions: ``normal`` (``loc``, ``scale``), ``uniform``
+    (``minval``, ``maxval``), ``bernoulli`` (``p``), ``categorical`` (``logits``).
     """
-    fan_in = shape[in_axis]
-    fan_out = shape[out_axis]
-    denominator = fan_in + fan_out
-    variance = 2.0 / denominator
-    bound = jnp.sqrt(3.0 * variance)
+    shape, dtype = template.shape, template.dtype
+    if distribution == "normal":
+        arr = jr.normal(key, shape, dtype=dtype)
+        return arr * kwargs.get("scale", 1.0) + kwargs.get("loc", 0.0)
+    if distribution == "uniform":
+        return jr.uniform(key, shape, dtype=dtype,
+                          minval=kwargs.get("minval", 0.0), maxval=kwargs.get("maxval", 1.0))
+    if distribution == "bernoulli":
+        return jr.bernoulli(key, kwargs.get("p", 0.5), shape).astype(dtype)
+    if distribution == "categorical":
+        logits = kwargs.get("logits")
+        if logits is None:
+            raise ValueError("categorical distribution requires 'logits'")
+        return jr.categorical(key, logits, shape=shape).astype(dtype)
+    raise ValueError(f"Unknown distribution: {distribution}")
+
+
+# ---------------------------------------------------------------------------
+# Initialisers
+# ---------------------------------------------------------------------------
+
+def compute_fans(shape: Tuple[int, ...], in_axis: int = -2, out_axis: int = -1) -> Tuple[float, float]:
+    """``(fan_in, fan_out)`` following the convention of ``jax.nn.initializers``.
+
+    Every axis that is neither ``in_axis`` nor ``out_axis`` is part of the
+    receptive field, so for a conv kernel ``(O, I, kh, kw)`` with
+    ``in_axis=1, out_axis=0`` we get ``fan_in = I * kh * kw``.
+    """
+    if len(shape) < 1:
+        return 1.0, 1.0
+    if len(shape) == 1:
+        return float(shape[0]), float(shape[0])
+    in_axis %= len(shape)
+    out_axis %= len(shape)
+    receptive_field = math.prod(s for i, s in enumerate(shape) if i not in (in_axis, out_axis))
+    return shape[in_axis] * receptive_field, shape[out_axis] * receptive_field
+
+
+def _variance_scaling(key: Array, shape: Tuple[int, ...], scale: float, mode: str,
+                      distribution: str, dtype: Any, in_axis: int, out_axis: int) -> Array:
+    fan_in, fan_out = compute_fans(shape, in_axis, out_axis)
+    denominator = {"fan_in": fan_in, "fan_out": fan_out, "fan_avg": (fan_in + fan_out) / 2}[mode]
+    variance = scale / max(denominator, 1.0)
+    if distribution == "normal":
+        return jr.normal(key, shape, dtype) * jnp.asarray(math.sqrt(variance), dtype)
+    bound = math.sqrt(3.0 * variance)
     return jr.uniform(key, shape, dtype, minval=-bound, maxval=bound)
 
 
-def glorot_normal_init(key: jax.Array, 
-                      shape: Tuple[int, ...], 
-                      dtype: jnp.dtype = jnp.float32,
-                      in_axis: int = -2,
-                      out_axis: int = -1) -> jax.Array:
-    """Glorot (Xavier) normal initialization.
-    
-    Args:
-        key: PRNG key
-        shape: Parameter shape
-        dtype: Parameter dtype
-        in_axis: Input dimension axis
-        out_axis: Output dimension axis
-        
-    Returns:
-        Initialized parameter array
+def glorot_uniform_init(key: Array, shape: Tuple[int, ...], dtype: Any = jnp.float32,
+                        in_axis: int = -2, out_axis: int = -1) -> Array:
+    """Glorot/Xavier uniform: ``U(-b, b)`` with ``b = sqrt(6 / (fan_in + fan_out))``."""
+    return _variance_scaling(key, shape, 1.0, "fan_avg", "uniform", dtype, in_axis, out_axis)
+
+
+def glorot_normal_init(key: Array, shape: Tuple[int, ...], dtype: Any = jnp.float32,
+                       in_axis: int = -2, out_axis: int = -1) -> Array:
+    """Glorot/Xavier normal: ``N(0, 2 / (fan_in + fan_out))``."""
+    return _variance_scaling(key, shape, 1.0, "fan_avg", "normal", dtype, in_axis, out_axis)
+
+
+def he_uniform_init(key: Array, shape: Tuple[int, ...], dtype: Any = jnp.float32,
+                    in_axis: int = -2, out_axis: int = -1) -> Array:
+    """He/Kaiming uniform for ReLU nets: variance ``2 / fan_in``."""
+    return _variance_scaling(key, shape, 2.0, "fan_in", "uniform", dtype, in_axis, out_axis)
+
+
+def he_normal_init(key: Array, shape: Tuple[int, ...], dtype: Any = jnp.float32,
+                   in_axis: int = -2, out_axis: int = -1) -> Array:
+    """He/Kaiming normal for ReLU nets: ``N(0, 2 / fan_in)``."""
+    return _variance_scaling(key, shape, 2.0, "fan_in", "normal", dtype, in_axis, out_axis)
+
+
+def lecun_uniform_init(key: Array, shape: Tuple[int, ...], dtype: Any = jnp.float32,
+                       in_axis: int = -2, out_axis: int = -1) -> Array:
+    """LeCun uniform (SELU nets): variance ``1 / fan_in``."""
+    return _variance_scaling(key, shape, 1.0, "fan_in", "uniform", dtype, in_axis, out_axis)
+
+
+def lecun_normal_init(key: Array, shape: Tuple[int, ...], dtype: Any = jnp.float32,
+                      in_axis: int = -2, out_axis: int = -1) -> Array:
+    """LeCun normal (SELU nets): ``N(0, 1 / fan_in)``."""
+    return _variance_scaling(key, shape, 1.0, "fan_in", "normal", dtype, in_axis, out_axis)
+
+
+def orthogonal_init(key: Array, shape: Tuple[int, ...], dtype: Any = jnp.float32,
+                    scale: float = 1.0) -> Array:
+    """Orthogonal matrix (via QR of a Gaussian) reshaped to ``shape``.
+
+    Rows (or columns, whichever is shorter) are orthonormal, which preserves
+    the norm of activations layer to layer - useful for deep nets and RNNs.
     """
-    fan_in = shape[in_axis]
-    fan_out = shape[out_axis]
-    denominator = fan_in + fan_out
-    variance = 2.0 / denominator
-    stddev = jnp.sqrt(variance)
-    return jr.normal(key, shape, dtype) * stddev
-
-
-def he_uniform_init(key: jax.Array, 
-                   shape: Tuple[int, ...], 
-                   dtype: jnp.dtype = jnp.float32,
-                   in_axis: int = -2) -> jax.Array:
-    """He (Kaiming) uniform initialization for ReLU activations.
-    
-    Args:
-        key: PRNG key
-        shape: Parameter shape
-        dtype: Parameter dtype
-        in_axis: Input dimension axis
-        
-    Returns:
-        Initialized parameter array
-    """
-    fan_in = shape[in_axis]
-    variance = 2.0 / fan_in
-    bound = jnp.sqrt(3.0 * variance)
-    return jr.uniform(key, shape, dtype, minval=-bound, maxval=bound)
-
-
-def he_normal_init(key: jax.Array, 
-                  shape: Tuple[int, ...], 
-                  dtype: jnp.dtype = jnp.float32,
-                  in_axis: int = -2) -> jax.Array:
-    """He (Kaiming) normal initialization for ReLU activations.
-    
-    Args:
-        key: PRNG key
-        shape: Parameter shape
-        dtype: Parameter dtype
-        in_axis: Input dimension axis
-        
-    Returns:
-        Initialized parameter array
-    """
-    fan_in = shape[in_axis]
-    stddev = jnp.sqrt(2.0 / fan_in)
-    return jr.normal(key, shape, dtype) * stddev
-
-
-def lecun_uniform_init(key: jax.Array, 
-                      shape: Tuple[int, ...], 
-                      dtype: jnp.dtype = jnp.float32,
-                      in_axis: int = -2) -> jax.Array:
-    """LeCun uniform initialization.
-    
-    Args:
-        key: PRNG key
-        shape: Parameter shape
-        dtype: Parameter dtype
-        in_axis: Input dimension axis
-        
-    Returns:
-        Initialized parameter array
-    """
-    fan_in = shape[in_axis]
-    variance = 1.0 / fan_in
-    bound = jnp.sqrt(3.0 * variance)
-    return jr.uniform(key, shape, dtype, minval=-bound, maxval=bound)
-
-
-def lecun_normal_init(key: jax.Array, 
-                     shape: Tuple[int, ...], 
-                     dtype: jnp.dtype = jnp.float32,
-                     in_axis: int = -2) -> jax.Array:
-    """LeCun normal initialization.
-    
-    Args:
-        key: PRNG key
-        shape: Parameter shape
-        dtype: Parameter dtype
-        in_axis: Input dimension axis
-        
-    Returns:
-        Initialized parameter array
-    """
-    fan_in = shape[in_axis]
-    stddev = jnp.sqrt(1.0 / fan_in)
-    return jr.normal(key, shape, dtype) * stddev
+    if len(shape) < 2:
+        raise ValueError("orthogonal_init needs at least a 2-D shape")
+    rows = math.prod(shape[:-1])
+    cols = shape[-1]
+    n_min, n_max = min(rows, cols), max(rows, cols)
+    a = jr.normal(key, (n_max, n_min), dtype)
+    q, r = jnp.linalg.qr(a)
+    q = q * jnp.sign(jnp.diagonal(r))  # make the decomposition unique
+    if rows < cols:
+        q = q.T
+    return (scale * q).reshape(shape)

@@ -1,357 +1,290 @@
 # File location: src/jax_nsl/core/numerics.py
 
 """
-Numerically stable operations: logsumexp, clipping, and safe math.
+Numerically stable operations: logsumexp, softmax, clipping, and safe math.
 
-This module provides numerically stable implementations of common
-operations that are prone to overflow, underflow, or precision issues.
+Every function here exists because the naive formula is wrong in floating
+point for *some* input range.  The docstrings explain which range and why the
+stable version works, so this module doubles as a reference for the
+techniques (max-shifting, the "double where" trick, dtype-aware step sizes).
 """
+
+from __future__ import annotations
+
+import math
+from typing import Any, Callable, Literal, Optional, Tuple, Union, overload
 
 import jax
 import jax.numpy as jnp
-from typing import Optional, Union, Tuple, Any, Callable, overload
-from typing import Literal
-import math
+from jax import lax
+
+Array = jax.Array
+Axis = Optional[Union[int, Tuple[int, ...]]]
 
 
-def safe_log(x: jnp.ndarray, eps: float = 1e-8) -> jnp.ndarray:
-    """Numerically stable logarithm.
-    
-    Args:
-        x: Input array
-        eps: Small epsilon to prevent log(0)
-        
-    Returns:
-        log(max(x, eps))
+# ---------------------------------------------------------------------------
+# Elementwise safe math
+# ---------------------------------------------------------------------------
+
+def safe_log(x: Array, eps: float = 1e-8) -> Array:
+    """``log(max(x, eps))`` so that zeros (and small negatives) never give -inf/NaN.
+
+    Note that the gradient is exactly zero wherever ``x < eps``; if you need a
+    non-zero gradient there, see :func:`jax_nsl.autodiff.custom_vjp.safe_log_vjp`.
     """
     return jnp.log(jnp.maximum(x, eps))
 
 
-def safe_exp(x: jnp.ndarray, max_val: Optional[float] = None) -> jnp.ndarray:
-    """Numerically stable exponential with optional clipping.
-    
-    Args:
-        x: Input array
-        max_val: Maximum value before exp (default: log of float32 max)
-        
-    Returns:
-        exp(min(x, max_val))
+def safe_exp(x: Array, max_val: Optional[float] = None) -> Array:
+    """``exp(min(x, max_val))`` - clips the argument so the result never overflows.
+
+    The default clip is ``log(finfo.max) - 1`` for the input dtype.
     """
     if max_val is None:
-        max_val = jnp.log(jnp.finfo(x.dtype).max) - 1.0
+        max_val = float(jnp.log(jnp.finfo(jnp.result_type(x)).max)) - 1.0
     return jnp.exp(jnp.minimum(x, max_val))
 
 
-@overload
-def logsumexp_stable(x: jnp.ndarray,
-                    axis: Optional[Union[int, Tuple[int, ...]]] = ...,
-                    keepdims: bool = ...,
-                    return_max: Literal[False] = ...) -> jnp.ndarray: ...
+def safe_sqrt(x: Array, eps: float = 0.0) -> Array:
+    """``sqrt(max(x, eps))`` - clamps tiny negatives produced by round-off.
 
-@overload
-def logsumexp_stable(x: jnp.ndarray,
-                    axis: Optional[Union[int, Tuple[int, ...]]] = ...,
-                    keepdims: bool = ...,
-                    return_max: Literal[True] = ...) -> Tuple[jnp.ndarray, jnp.ndarray]: ...
+    With ``eps=0`` the gradient at 0 is still infinite (``1/(2*sqrt(0))``);
+    pass a small positive ``eps`` when the value is used inside a loss.
+    """
+    return jnp.sqrt(jnp.maximum(x, eps))
 
-def logsumexp_stable(x: jnp.ndarray,
-                    axis: Optional[Union[int, Tuple[int, ...]]] = None,
-                    keepdims: bool = False,
-                    return_max: bool = False) -> Union[jnp.ndarray, Tuple[jnp.ndarray, jnp.ndarray]]:
-    """Numerically stable log-sum-exp computation.
-    
-    Computes log(sum(exp(x), axis)) in a numerically stable way by
-    factoring out the maximum value before exponentiation.
-    
+
+def safe_divide(x: Array, y: Array, eps: float = 1e-8, replace_nan: bool = True) -> Array:
+    """``x / (y + eps)`` with non-finite results replaced by 0.
+
     Args:
-        x: Input array
-        axis: Axis or axes along which to sum
-        keepdims: Whether to keep dimensions
-        return_max: Whether to return the max value used for stability
-        
-    Returns:
-        log-sum-exp result, optionally with max value
+        x: Numerator.
+        y: Denominator.
+        eps: Added to the denominator (use a *signed* eps yourself if ``y`` can
+            be negative and close to zero).
+        replace_nan: Replace ``inf``/``nan`` results with 0.
+    """
+    result = x / (y + eps)
+    if replace_nan:
+        result = jnp.where(jnp.isfinite(result), result, 0.0)
+    return result
+
+
+def stable_sigmoid(x: Array) -> Array:
+    """Sigmoid that is finite *and has finite gradients* for every float input.
+
+    The textbook piecewise form::
+
+        where(x >= 0, 1 / (1 + exp(-x)), exp(x) / (1 + exp(x)))
+
+    is finite in the forward pass, but ``jnp.where`` still evaluates *both*
+    branches, so for ``x = -1000`` the unused ``exp(-x)`` overflows to ``inf``
+    and its derivative becomes ``inf * 0 = nan``.  The "double where" trick
+    feeds each branch an argument that is always safe::
+
+        z = where(x >= 0, -x, x)     # z <= 0, so exp(z) <= 1
+        e = exp(z)
+        where(x >= 0, 1 / (1 + e), e / (1 + e))
+    """
+    z = jnp.where(x >= 0, -x, x)
+    e = jnp.exp(z)
+    return jnp.where(x >= 0, 1.0 / (1.0 + e), e / (1.0 + e))
+
+
+def stable_tanh(x: Array) -> Array:
+    """``tanh`` via ``2 * sigmoid(2x) - 1`` using :func:`stable_sigmoid`."""
+    return 2.0 * stable_sigmoid(2.0 * x) - 1.0
+
+
+# ---------------------------------------------------------------------------
+# Log-sum-exp family
+# ---------------------------------------------------------------------------
+
+@overload
+def logsumexp_stable(x: Array, axis: Axis = ..., keepdims: bool = ...,
+                     return_max: Literal[False] = ...) -> Array: ...
+
+
+@overload
+def logsumexp_stable(x: Array, axis: Axis = ..., keepdims: bool = ...,
+                     return_max: Literal[True] = ...) -> Tuple[Array, Array]: ...
+
+
+def logsumexp_stable(x: Array, axis: Axis = None, keepdims: bool = False,
+                     return_max: bool = False) -> Union[Array, Tuple[Array, Array]]:
+    """``log(sum(exp(x)))`` computed as ``m + log(sum(exp(x - m)))`` with ``m = max(x)``.
+
+    Subtracting the max guarantees the largest exponent is ``exp(0) = 1``, so
+    nothing overflows, and at least one term is not underflowed.  The max is
+    wrapped in ``stop_gradient``: mathematically the shift cancels out of the
+    derivative, so we avoid tracing a useless gradient path through ``max``.
+
+    Rows that are entirely ``-inf`` return ``-inf`` (not NaN).
+
+    Args:
+        x: Input array.
+        axis: Axis or axes to reduce over.
+        keepdims: Keep reduced axes as size-1 dimensions.
+        return_max: Also return the shift ``m`` (with the same ``keepdims``).
     """
     x_max = jnp.max(x, axis=axis, keepdims=True)
-    
-    # Handle case where all values are -inf
-    x_max = jnp.where(jnp.isfinite(x_max), x_max, 0.0)
-    
+    x_max = lax.stop_gradient(jnp.where(jnp.isfinite(x_max), x_max, 0.0))
     result = x_max + jnp.log(jnp.sum(jnp.exp(x - x_max), axis=axis, keepdims=True))
-    
+
     if not keepdims:
         result = jnp.squeeze(result, axis=axis)
         x_max = jnp.squeeze(x_max, axis=axis)
-    
     if return_max:
         return result, x_max
     return result
 
 
-def softmax_stable(x: jnp.ndarray, 
-                  axis: int = -1,
-                  temperature: float = 1.0) -> jnp.ndarray:
-    """Numerically stable softmax computation.
-    
+def softmax_stable(x: Array, axis: int = -1, temperature: float = 1.0) -> Array:
+    """Softmax with the max subtracted before exponentiating.
+
     Args:
-        x: Input logits
-        axis: Axis along which to compute softmax
-        temperature: Temperature parameter (higher = more uniform)
-        
-    Returns:
-        Softmax probabilities
+        x: Logits.
+        axis: Axis along which probabilities sum to one.
+        temperature: Divides the logits; ``> 1`` flattens, ``< 1`` sharpens.
     """
     x = x / temperature
-    x_max = jnp.max(x, axis=axis, keepdims=True)
-    x_shifted = x - x_max
+    x_shifted = x - lax.stop_gradient(jnp.max(x, axis=axis, keepdims=True))
     exp_x = jnp.exp(x_shifted)
     return exp_x / jnp.sum(exp_x, axis=axis, keepdims=True)
 
 
-def log_softmax_stable(x: jnp.ndarray, 
-                      axis: int = -1,
-                      temperature: float = 1.0) -> jnp.ndarray:
-    """Numerically stable log-softmax computation.
-    
-    Args:
-        x: Input logits
-        axis: Axis along which to compute log-softmax
-        temperature: Temperature parameter
-        
-    Returns:
-        Log-softmax values
+def log_softmax_stable(x: Array, axis: int = -1, temperature: float = 1.0) -> Array:
+    """Log-softmax computed as ``shifted - log(sum(exp(shifted)))``.
+
+    This is *not* the same as ``x - logsumexp(x)`` in floating point.  For
+    logits around 1000, ``logsumexp`` is ~1000.4 and float32 only resolves it
+    to about 6e-5, so ``x - logsumexp(x)`` loses four digits of the answer.
+    Shifting first keeps every intermediate O(1).
     """
     x = x / temperature
-    return x - logsumexp_stable(x, axis=axis, keepdims=True)
+    shifted = x - lax.stop_gradient(jnp.max(x, axis=axis, keepdims=True))
+    return shifted - jnp.log(jnp.sum(jnp.exp(shifted), axis=axis, keepdims=True))
 
 
-def clip_gradients(grads: Any, 
-                  max_norm: Optional[float] = None,
-                  max_value: Optional[float] = None) -> Any:
-    """Clip gradients by global norm or value.
-    
-    Args:
-        grads: Gradient pytree
-        max_norm: Maximum gradient norm (global clipping)
-        max_value: Maximum gradient value (element-wise clipping)
-        
-    Returns:
-        Clipped gradients with same structure
-    """
-    if max_norm is not None:
-        # Global norm clipping
-        global_norm = safe_norm(grads)
-        clip_factor = jnp.minimum(1.0, max_norm / (global_norm + 1e-8))
-        grads = jax.tree_util.tree_map(lambda g: g * clip_factor, grads)
-    
-    if max_value is not None:
-        # Element-wise value clipping
-        grads = jax.tree_util.tree_map(
-            lambda g: jnp.clip(g, -max_value, max_value), 
-            grads
-        )
-    
-    return grads
-
-
-def safe_norm(tree: Any, ord: Optional[Union[int, float, str]] = None) -> jnp.ndarray:
-    """Compute norm of a pytree of arrays.
-    
-    Args:
-        tree: PyTree of arrays
-        ord: Order of the norm (2 for L2, 1 for L1, etc.)
-        
-    Returns:
-        Scalar norm value
-    """
-    if ord is None or ord == 2 or ord == 'fro':
-        # L2 norm (default)
-        leaves = jax.tree_util.tree_leaves(tree)
-        return jnp.sqrt(sum(jnp.sum(leaf ** 2) for leaf in leaves))
-    
-    elif ord == 1:
-        # L1 norm
-        leaves = jax.tree_util.tree_leaves(tree)
-        return sum(jnp.sum(jnp.abs(leaf)) for leaf in leaves)
-    
-    elif ord == jnp.inf or ord == 'inf':
-        # L-infinity norm
-        leaves = jax.tree_util.tree_leaves(tree)
-        return max(jnp.max(jnp.abs(leaf)) for leaf in leaves)
-    
-    else:
-        raise ValueError(f"Unsupported norm order: {ord}")
-
-
-def safe_divide(x: jnp.ndarray, 
-               y: jnp.ndarray, 
-               eps: float = 1e-8,
-               replace_nan: bool = True) -> jnp.ndarray:
-    """Numerically stable division with optional NaN replacement.
-    
-    Args:
-        x: Numerator
-        y: Denominator
-        eps: Small epsilon added to denominator
-        replace_nan: Whether to replace NaN results with 0
-        
-    Returns:
-        x / (y + eps) with optional NaN handling
-    """
-    result = x / (y + eps)
-    
-    if replace_nan:
-        result = jnp.where(jnp.isfinite(result), result, 0.0)
-    
-    return result
-
-
-def stable_sigmoid(x: jnp.ndarray) -> jnp.ndarray:
-    """Numerically stable sigmoid computation.
-    
-    Uses the identity: sigmoid(x) = exp(x) / (1 + exp(x)) for x >= 0
-                                 = 1 / (1 + exp(-x)) for x < 0
-    
-    Args:
-        x: Input array
-        
-    Returns:
-        Sigmoid of input
-    """
-    return jnp.where(
-        x >= 0,
-        1.0 / (1.0 + jnp.exp(-x)),
-        jnp.exp(x) / (1.0 + jnp.exp(x))
-    )
-
-
-def stable_tanh(x: jnp.ndarray) -> jnp.ndarray:
-    """Numerically stable tanh computation.
-    
-    Args:
-        x: Input array
-        
-    Returns:
-        Tanh of input
-    """
-    # Use the identity: tanh(x) = 2 * sigmoid(2x) - 1
-    return 2.0 * stable_sigmoid(2.0 * x) - 1.0
-
-
-def smooth_max(x: jnp.ndarray, 
-               axis: Optional[int] = None,
-               alpha: float = 1.0) -> jnp.ndarray:
-    """Smooth approximation to max function.
-    
-    Uses the smooth maximum: smooth_max(x) = log(sum(exp(alpha * x))) / alpha
-    
-    Args:
-        x: Input array
-        axis: Axis along which to compute smooth max
-        alpha: Smoothness parameter (higher = closer to true max)
-        
-    Returns:
-        Smooth maximum
-    """
+def smooth_max(x: Array, axis: Axis = None, alpha: float = 1.0) -> Array:
+    """Smooth maximum ``logsumexp(alpha * x) / alpha`` (larger ``alpha`` -> closer to max)."""
     return logsumexp_stable(alpha * x, axis=axis) / alpha
 
 
-def smooth_min(x: jnp.ndarray,
-               axis: Optional[int] = None, 
-               alpha: float = 1.0) -> jnp.ndarray:
-    """Smooth approximation to min function.
-    
-    Args:
-        x: Input array
-        axis: Axis along which to compute smooth min
-        alpha: Smoothness parameter (higher = closer to true min)
-        
-    Returns:
-        Smooth minimum
-    """
+def smooth_min(x: Array, axis: Axis = None, alpha: float = 1.0) -> Array:
+    """Smooth minimum ``-smooth_max(-x)``."""
     return -smooth_max(-x, axis=axis, alpha=alpha)
 
 
-def gumbel_softmax(logits: jnp.ndarray,
-                  temperature: float,
-                  key: jax.Array,
-                  axis: int = -1,
-                  hard: bool = False) -> jnp.ndarray:
-    """Gumbel-Softmax sampling for differentiable discrete sampling.
-    
+def gumbel_softmax(logits: Array, temperature: float, key: Array,
+                   axis: int = -1, hard: bool = False) -> Array:
+    """Gumbel-softmax relaxation of a categorical sample.
+
     Args:
-        logits: Input logits
-        temperature: Gumbel softmax temperature
-        key: Random key for Gumbel noise
-        axis: Axis along which to apply softmax
-        hard: Whether to use straight-through estimator
-        
-    Returns:
-        Gumbel-softmax samples
+        logits: Unnormalised log-probabilities.
+        temperature: Relaxation temperature; ``-> 0`` approaches one-hot.
+        key: PRNG key for the Gumbel noise.
+        axis: Category axis.
+        hard: Return a one-hot sample in the forward pass while keeping the
+            soft gradient (straight-through estimator).
     """
-    # Sample Gumbel noise
-    gumbel_noise = -jnp.log(-jnp.log(jax.random.uniform(key, logits.shape, minval=1e-10)))
-    
-    # Add noise to logits and apply softmax
-    y = softmax_stable((logits + gumbel_noise) / temperature, axis=axis)
-    
+    u = jax.random.uniform(key, logits.shape, minval=jnp.finfo(logits.dtype).tiny, maxval=1.0)
+    gumbel = -jnp.log(-jnp.log(u))
+    y = softmax_stable((logits + gumbel) / temperature, axis=axis)
     if hard:
-        # Straight-through estimator
-        y_hard = jnp.eye(logits.shape[axis])[jnp.argmax(y, axis=axis)]
-        y = y_hard - jax.lax.stop_gradient(y) + y
-    
+        y_hard = jax.nn.one_hot(jnp.argmax(y, axis=axis), logits.shape[axis], axis=axis,
+                                dtype=y.dtype)
+        y = y_hard - lax.stop_gradient(y) + y
     return y
 
 
 # ---------------------------------------------------------------------------
-# Aliases for test / notebook compatibility
+# Pytree norms and clipping
 # ---------------------------------------------------------------------------
 
-#: Alias for :func:`logsumexp_stable`
-stable_logsumexp = logsumexp_stable
-
-#: Alias for :func:`softmax_stable`
-stable_softmax = softmax_stable
-
-
-def safe_sqrt(x: jnp.ndarray, eps: float = 0.0) -> jnp.ndarray:
-    """Numerically safe square root.
-
-    Clamps negative values to *eps* before taking the root so gradients
-    remain finite everywhere.
-
-    Args:
-        x: Input array.
-        eps: Floor for values before sqrt (default 0 — clamp to 0).
-
-    Returns:
-        Element-wise sqrt of max(x, eps).
-    """
-    return jnp.sqrt(jnp.maximum(x, eps))
+def safe_norm(tree: Any, ord: Optional[Union[int, float, str]] = None) -> Array:
+    """Global norm over every leaf of a pytree (``ord`` in {None, 2, 'fro', 1, inf})."""
+    leaves = jax.tree_util.tree_leaves(tree)
+    if not leaves:
+        return jnp.asarray(0.0)
+    if ord is None or ord == 2 or ord == "fro":
+        return jnp.sqrt(sum(jnp.sum(jnp.square(leaf)) for leaf in leaves))
+    if ord == 1:
+        return sum(jnp.sum(jnp.abs(leaf)) for leaf in leaves)
+    if ord in (jnp.inf, math.inf, "inf"):
+        return jnp.max(jnp.stack([jnp.max(jnp.abs(leaf)) for leaf in leaves]))
+    raise ValueError(f"Unsupported norm order: {ord!r}")
 
 
-def numerical_gradient(fun: Callable, x: jnp.ndarray,
-                       h: float = 1e-5) -> jnp.ndarray:
-    """Finite-difference gradient estimate (central differences).
+def clip_gradients(grads: Any, max_norm: Optional[float] = None,
+                   max_value: Optional[float] = None) -> Any:
+    """Clip a gradient pytree by global norm and/or elementwise value.
 
-    Convenience wrapper around the full
-    :func:`~jax_nsl.autodiff.grad_jac_hess.finite_diff_grad` for simple
-    single-argument scalar functions.
+    Global-norm clipping rescales *all* leaves by ``min(1, max_norm / ||g||)``
+    so the update direction is preserved; value clipping changes direction.
 
     Args:
-        fun: Scalar-valued function of a single array argument.
-        x: Point at which to evaluate the gradient.
-        h: Step size.
+        grads: Gradient pytree.
+        max_norm: If given, rescale so the global L2 norm is at most this.
+        max_value: If given, clip each element to ``[-max_value, max_value]``.
+    """
+    if max_norm is not None:
+        global_norm = safe_norm(grads)
+        clip_factor = jnp.minimum(1.0, max_norm / (global_norm + 1e-8))
+        grads = jax.tree_util.tree_map(lambda g: g * clip_factor, grads)
+    if max_value is not None:
+        grads = jax.tree_util.tree_map(lambda g: jnp.clip(g, -max_value, max_value), grads)
+    return grads
+
+
+# ---------------------------------------------------------------------------
+# Finite differences
+# ---------------------------------------------------------------------------
+
+def default_fd_step(x: Array, order: int = 2) -> float:
+    """Step size that balances truncation and round-off error for ``x``'s dtype.
+
+    For a central difference (``order=2``) the optimal step scales as
+    ``eps ** (1/3)``; for a forward difference as ``eps ** (1/2)``.  In float32
+    this is ~5e-3 - much larger than the 1e-5 people habitually use, which is
+    below the resolution of float32 for ``|x| > ~10``.
+    """
+    eps = float(jnp.finfo(jnp.result_type(x)).eps)
+    scale = float(jnp.maximum(1.0, jnp.max(jnp.abs(x)))) if jnp.size(x) else 1.0
+    return (eps ** (1.0 / (order + 1))) * scale
+
+
+def numerical_gradient(fun: Callable[[Array], Array], x: Array,
+                       h: Optional[float] = None) -> Array:
+    """Central-difference gradient of a scalar function of one array.
+
+    Args:
+        fun: Scalar-valued function.
+        x: Point at which to differentiate.
+        h: Step size; defaults to :func:`default_fd_step`.  The accuracy you
+            can expect is roughly ``h**2`` truncation plus ``eps/h`` round-off,
+            i.e. ~1e-4 in float32 and ~1e-10 in float64 at the default step.
 
     Returns:
-        Gradient array with the same shape as *x*.
+        Array with the same shape as ``x``.
     """
+    if h is None:
+        h = default_fd_step(x, order=2)
     flat = x.ravel()
     n = flat.size
 
     def partial(i):
-        ei = jnp.zeros(n).at[i].set(h)
-        return (fun((flat + ei).reshape(x.shape)) -
-                fun((flat - ei).reshape(x.shape))) / (2 * h)
+        ei = jnp.zeros(n, dtype=flat.dtype).at[i].set(h)
+        fp = fun((flat + ei).reshape(x.shape))
+        fm = fun((flat - ei).reshape(x.shape))
+        return (fp - fm) / (2 * h)
 
     return jax.vmap(partial)(jnp.arange(n)).reshape(x.shape)
+
+
+# ---------------------------------------------------------------------------
+# Aliases (kept for notebooks / older imports)
+# ---------------------------------------------------------------------------
+
+stable_logsumexp = logsumexp_stable
+stable_softmax = softmax_stable
