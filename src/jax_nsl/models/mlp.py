@@ -1,377 +1,233 @@
 # File location: src/jax_nsl/models/mlp.py
 
 """
-Multi-layer perceptron implementation in pure JAX.
+Multi-layer perceptrons in pure JAX.
 
-This module provides a clean, educational implementation of MLPs
-with various activation functions and initialization schemes.
+Design rule: *parameters are pytrees of arrays, configuration is Python*.
+Mixing the two (e.g. storing an activation name inside the params dict)
+breaks ``jax.grad``, ``jit`` donation and optimisers, all of which map over
+every leaf.  Configuration is therefore passed as keyword arguments or
+captured in closures by :func:`create_mlp`.
 """
+
+from __future__ import annotations
+
+import functools
+from typing import Any, Callable, Dict, List, Sequence, Tuple
 
 import jax
 import jax.numpy as jnp
 import jax.random as jr
-from typing import List, Tuple, Callable, Dict, Any, Optional
-from ..core.prng import glorot_uniform_init, he_normal_init
+
+from jax_nsl.core.prng import glorot_uniform_init, he_normal_init, lecun_normal_init
+
+Array = jax.Array
+Params = Dict[str, List[Array]]
+
+_INITIALIZERS: Dict[str, Callable] = {
+    "glorot": glorot_uniform_init,
+    "he": he_normal_init,
+    "lecun": lecun_normal_init,
+    "normal": lambda key, shape, dtype=jnp.float32: 0.1 * jr.normal(key, shape, dtype),
+}
+
+_ACTIVATIONS: Dict[str, Callable[[Array], Array]] = {
+    "relu": jax.nn.relu,
+    "tanh": jnp.tanh,
+    "sigmoid": jax.nn.sigmoid,
+    "gelu": jax.nn.gelu,
+    "swish": jax.nn.silu,
+    "silu": jax.nn.silu,
+    "elu": jax.nn.elu,
+    "selu": jax.nn.selu,
+    "softplus": jax.nn.softplus,
+    "leaky_relu": jax.nn.leaky_relu,
+    "linear": lambda x: x,
+    "identity": lambda x: x,
+    "softmax": lambda x: jax.nn.softmax(x, axis=-1),
+}
 
 
-def init_mlp_params(key: jax.Array,
-                   layer_sizes: List[int],
-                   activation: str = 'relu',
-                   output_activation: str = 'linear',
-                   init_type: str = 'glorot') -> Dict[str, Any]:
-    """Initialize MLP parameters.
-    
+def activation_fn(x: Array, name: str) -> Array:
+    """Apply the activation called ``name`` (see ``_ACTIVATIONS`` for the list)."""
+    try:
+        return _ACTIVATIONS[name](x)
+    except KeyError as e:
+        raise ValueError(f"Unknown activation {name!r}; choose from {sorted(_ACTIVATIONS)}") from e
+
+
+def init_mlp_params(key: Array, layer_sizes: Sequence[int], init_type: str = "glorot",
+                    dtype: Any = jnp.float32) -> Params:
+    """Initialise ``{'weights': [W_1, ...], 'biases': [b_1, ...]}`` for the given sizes.
+
     Args:
-        key: Random key for initialization
-        layer_sizes: List of layer sizes [input_size, hidden1, hidden2, ..., output_size]
-        activation: Hidden layer activation function
-        output_activation: Output layer activation
-        init_type: Weight initialization scheme
-        
-    Returns:
-        Dictionary of parameters
+        key: PRNG key.
+        layer_sizes: ``[in, hidden_1, ..., out]``.
+        init_type: ``'glorot'`` (tanh/sigmoid nets), ``'he'`` (ReLU nets),
+            ``'lecun'`` (SELU nets) or ``'normal'``.
+        dtype: Parameter dtype.
     """
+    if init_type not in _INITIALIZERS:
+        raise ValueError(f"Unknown initialization {init_type!r}")
+    init = _INITIALIZERS[init_type]
     keys = jr.split(key, len(layer_sizes) - 1)
-    params = {'weights': [], 'biases': []}
-    
-    for i, (key_i, in_size, out_size) in enumerate(zip(keys, layer_sizes[:-1], layer_sizes[1:])):
-        w_key, b_key = jr.split(key_i, 2)
-        
-        # Initialize weights
-        if init_type == 'glorot':
-            W = glorot_uniform_init(w_key, (in_size, out_size))
-        elif init_type == 'he':
-            W = he_normal_init(w_key, (in_size, out_size))
-        elif init_type == 'normal':
-            W = jr.normal(w_key, (in_size, out_size)) * 0.1
-        else:
-            raise ValueError(f"Unknown initialization: {init_type}")
-        
-        # Initialize biases (typically zero)
-        b = jnp.zeros(out_size)
-        
-        params['weights'].append(W)
-        params['biases'].append(b)
-    
-    # Store activation functions
-    params['activation'] = activation
-    params['output_activation'] = output_activation
-    
-    return params
+    weights = [init(k, (n_in, n_out), dtype) for k, n_in, n_out in
+               zip(keys, layer_sizes[:-1], layer_sizes[1:])]
+    biases = [jnp.zeros(n_out, dtype) for n_out in layer_sizes[1:]]
+    return {"weights": weights, "biases": biases}
 
 
-def activation_fn(x: jnp.ndarray, name: str) -> jnp.ndarray:
-    """Apply activation function.
-    
-    Args:
-        x: Input array
-        name: Activation function name
-        
-    Returns:
-        Activated output
-    """
-    if name == 'relu':
-        return jax.nn.relu(x)
-    elif name == 'tanh':
-        return jnp.tanh(x)
-    elif name == 'sigmoid':
-        return jax.nn.sigmoid(x)
-    elif name == 'gelu':
-        return jax.nn.gelu(x)
-    elif name == 'swish' or name == 'silu':
-        return jax.nn.silu(x)
-    elif name == 'elu':
-        return jax.nn.elu(x)
-    elif name == 'leaky_relu':
-        return jax.nn.leaky_relu(x)
-    elif name == 'linear' or name == 'identity':
-        return x
-    elif name == 'softmax':
-        return jax.nn.softmax(x, axis=-1)
-    else:
-        raise ValueError(f"Unknown activation function: {name}")
+def dense_layer(x: Array, weights: Array, bias: Array, activation: str = "linear") -> Array:
+    """``activation(x @ W + b)``."""
+    return activation_fn(x @ weights + bias, activation)
 
 
-def dense_layer(x: jnp.ndarray, 
-               weights: jnp.ndarray, 
-               bias: jnp.ndarray,
-               activation: str = 'linear') -> jnp.ndarray:
-    """Single dense layer computation.
-    
-    Args:
-        x: Input features
-        weights: Weight matrix
-        bias: Bias vector
-        activation: Activation function name
-        
-    Returns:
-        Layer output
-    """
-    linear_output = x @ weights + bias
-    return activation_fn(linear_output, activation)
-
-
-def mlp_forward(params: Dict[str, Any], 
-               x: jnp.ndarray,
-               training: bool = True) -> jnp.ndarray:
-    """Forward pass through MLP.
-    
-    Args:
-        params: Model parameters
-        x: Input batch with shape (batch_size, input_dim)
-        training: Whether in training mode (affects dropout, etc.)
-        
-    Returns:
-        Network output with shape (batch_size, output_dim)
-    """
-    weights = params['weights']
-    biases = params['biases']
-    activation = params['activation']
-    output_activation = params['output_activation']
-    
+def mlp_forward(params: Params, x: Array, activation: str = "relu",
+                output_activation: str = "linear") -> Array:
+    """Forward pass: hidden layers use ``activation``, the last layer ``output_activation``."""
+    weights, biases = params["weights"], params["biases"]
     h = x
-    
-    # Forward through hidden layers
-    for i in range(len(weights) - 1):
-        h = dense_layer(h, weights[i], biases[i], activation)
-    
-    # Output layer
-    output = dense_layer(h, weights[-1], biases[-1], output_activation)
-    
-    return output
+    for w, b in zip(weights[:-1], biases[:-1]):
+        h = dense_layer(h, w, b, activation)
+    return dense_layer(h, weights[-1], biases[-1], output_activation)
 
 
-def mlp_predict(params: Dict[str, Any], x: jnp.ndarray) -> jnp.ndarray:
-    """Prediction (inference mode).
-    
-    Args:
-        params: Model parameters
-        x: Input data
-        
-    Returns:
-        Model predictions
+mlp_predict = mlp_forward
+
+
+def mlp_with_dropout(params: Params, x: Array, key: Array, dropout_rate: float = 0.1,
+                     training: bool = True, activation: str = "relu",
+                     output_activation: str = "linear") -> Array:
+    """Forward pass with inverted dropout after every hidden activation.
+
+    Inverted dropout scales the kept units by ``1 / keep_prob`` at training
+    time so that no rescaling is needed at inference.
     """
-    return mlp_forward(params, x, training=False)
+    weights, biases = params["weights"], params["biases"]
+    keys = jr.split(key, max(len(weights) - 1, 1))
+    keep_prob = 1.0 - dropout_rate
+    h = x
+    for k, w, b in zip(keys, weights[:-1], biases[:-1]):
+        h = dense_layer(h, w, b, activation)
+        if training and dropout_rate > 0.0:
+            mask = jr.bernoulli(k, keep_prob, h.shape)
+            h = jnp.where(mask, h / keep_prob, 0.0)
+    return dense_layer(h, weights[-1], biases[-1], output_activation)
 
 
-def create_mlp(layer_sizes: List[int],
-              activation: str = 'relu',
-              output_activation: str = 'linear',
-              init_type: str = 'glorot',
-              seed: int = 42) -> Tuple[Dict[str, Any], Callable, Callable]:
-    """Create MLP with initialization and forward functions.
-    
-    Args:
-        layer_sizes: Architecture specification
-        activation: Hidden activation function
-        output_activation: Output activation function
-        init_type: Weight initialization
-        seed: Random seed
-        
-    Returns:
-        (params, forward_fn, predict_fn) tuple
+# ---------------------------------------------------------------------------
+# Batch normalisation with running statistics
+# ---------------------------------------------------------------------------
+
+def init_batch_norm(num_features: int, dtype: Any = jnp.float32) -> Tuple[Dict[str, Array], Dict[str, Array]]:
+    """Return ``(params, state)``: learnable ``scale``/``bias`` and running ``mean``/``var``."""
+    params = {"scale": jnp.ones(num_features, dtype), "bias": jnp.zeros(num_features, dtype)}
+    state = {"mean": jnp.zeros(num_features, dtype), "var": jnp.ones(num_features, dtype)}
+    return params, state
+
+
+def batch_norm(x: Array, params: Dict[str, Array], state: Dict[str, Array], training: bool,
+               momentum: float = 0.9, epsilon: float = 1e-5, axes: Tuple[int, ...] = (0,)
+               ) -> Tuple[Array, Dict[str, Array]]:
+    """Batch normalisation over ``axes``; returns ``(output, new_state)``.
+
+    Running statistics are *state*, not parameters: they are updated by an
+    exponential moving average during training and used verbatim at
+    inference.  Keeping them separate from ``params`` means the optimiser
+    never touches them.
     """
-    key = jr.PRNGKey(seed)
-    params = init_mlp_params(
-        key, layer_sizes, activation, output_activation, init_type
-    )
-    
+    if training:
+        mean = jnp.mean(x, axis=axes)
+        var = jnp.var(x, axis=axes)
+        new_state = {"mean": momentum * state["mean"] + (1 - momentum) * mean,
+                     "var": momentum * state["var"] + (1 - momentum) * var}
+    else:
+        mean, var = state["mean"], state["var"]
+        new_state = state
+    x_hat = (x - mean) / jnp.sqrt(var + epsilon)
+    return params["scale"] * x_hat + params["bias"], new_state
+
+
+def init_mlp_with_batch_norm(key: Array, layer_sizes: Sequence[int], init_type: str = "he"
+                             ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """MLP parameters plus one batch-norm (params, state) pair per hidden layer."""
+    params = init_mlp_params(key, layer_sizes, init_type)
+    bn = [init_batch_norm(n) for n in layer_sizes[1:-1]]
+    params["bn"] = [p for p, _ in bn]
+    state = {"bn": [s for _, s in bn]}
+    return params, state
+
+
+def mlp_with_batch_norm(params: Dict[str, Any], state: Dict[str, Any], x: Array, training: bool,
+                        activation: str = "relu", output_activation: str = "linear"
+                        ) -> Tuple[Array, Dict[str, Any]]:
+    """Dense -> BatchNorm -> activation for each hidden layer; returns ``(out, new_state)``."""
+    weights, biases = params["weights"], params["biases"]
+    new_bn_states = []
+    h = x
+    for i, (w, b) in enumerate(zip(weights[:-1], biases[:-1])):
+        h = h @ w + b
+        h, s = batch_norm(h, params["bn"][i], state["bn"][i], training)
+        new_bn_states.append(s)
+        h = activation_fn(h, activation)
+    out = dense_layer(h, weights[-1], biases[-1], output_activation)
+    return out, {"bn": new_bn_states}
+
+
+# ---------------------------------------------------------------------------
+# Factories and inspection
+# ---------------------------------------------------------------------------
+
+def create_mlp(layer_sizes: Sequence[int], activation: str = "relu",
+               output_activation: str = "linear", init_type: str = "glorot", seed: int = 42
+               ) -> Tuple[Params, Callable, Callable]:
+    """``(params, forward_fn, predict_fn)`` with the configuration captured in closures.
+
+    ``forward_fn(params, x, training=True)`` keeps a ``training`` flag for
+    API symmetry with models that have train/eval behaviour.
+    """
+    params = init_mlp_params(jr.PRNGKey(seed), layer_sizes, init_type)
+    forward = functools.partial(mlp_forward, activation=activation,
+                                output_activation=output_activation)
+
     def forward_fn(params, x, training=True):
-        return mlp_forward(params, x, training)
-    
+        return forward(params, x)
+
     def predict_fn(params, x):
-        return mlp_predict(params, x)
-    
+        return forward(params, x)
+
     return params, forward_fn, predict_fn
 
 
-# Specialized MLP variants
-def create_classifier(input_dim: int,
-                     hidden_dims: List[int],
-                     num_classes: int,
-                     activation: str = 'relu',
-                     seed: int = 42) -> Tuple[Dict[str, Any], Callable]:
-    """Create classification MLP with softmax output.
-    
-    Args:
-        input_dim: Input feature dimension
-        hidden_dims: Hidden layer sizes
-        num_classes: Number of output classes
-        activation: Hidden activation function
-        seed: Random seed
-        
-    Returns:
-        (params, forward_fn) tuple
-    """
-    layer_sizes = [input_dim] + hidden_dims + [num_classes]
-    params, forward_fn, _ = create_mlp(
-        layer_sizes, 
-        activation=activation,
-        output_activation='softmax',
-        seed=seed
-    )
-    
+def create_classifier(input_dim: int, hidden_dims: Sequence[int], num_classes: int,
+                      activation: str = "relu", seed: int = 42) -> Tuple[Params, Callable]:
+    """MLP returning *logits* (use a cross-entropy loss that takes logits)."""
+    params, forward_fn, _ = create_mlp([input_dim, *hidden_dims, num_classes], activation,
+                                       "linear", "he" if activation == "relu" else "glorot", seed)
     return params, forward_fn
 
 
-def create_regressor(input_dim: int,
-                    hidden_dims: List[int],
-                    output_dim: int = 1,
-                    activation: str = 'relu',
-                    seed: int = 42) -> Tuple[Dict[str, Any], Callable]:
-    """Create regression MLP with linear output.
-    
-    Args:
-        input_dim: Input feature dimension
-        hidden_dims: Hidden layer sizes
-        output_dim: Output dimension
-        activation: Hidden activation function
-        seed: Random seed
-        
-    Returns:
-        (params, forward_fn) tuple
-    """
-    layer_sizes = [input_dim] + hidden_dims + [output_dim]
-    params, forward_fn, _ = create_mlp(
-        layer_sizes,
-        activation=activation,
-        output_activation='linear', 
-        seed=seed
-    )
-    
+def create_regressor(input_dim: int, hidden_dims: Sequence[int], output_dim: int = 1,
+                     activation: str = "relu", seed: int = 42) -> Tuple[Params, Callable]:
+    """MLP with a linear output layer."""
+    params, forward_fn, _ = create_mlp([input_dim, *hidden_dims, output_dim], activation,
+                                       "linear", "he" if activation == "relu" else "glorot", seed)
     return params, forward_fn
 
 
-def mlp_with_dropout(params: Dict[str, Any],
-                    x: jnp.ndarray,
-                    key: jax.Array,
-                    dropout_rate: float = 0.1,
-                    training: bool = True) -> jnp.ndarray:
-    """MLP forward pass with dropout.
-    
-    Args:
-        params: Model parameters
-        x: Input batch
-        key: Random key for dropout
-        dropout_rate: Dropout probability
-        training: Whether in training mode
-        
-    Returns:
-        Network output with dropout applied
-    """
-    weights = params['weights']
-    biases = params['biases']
-    activation = params['activation']
-    output_activation = params['output_activation']
-    
-    keys = jr.split(key, len(weights))
+def count_parameters(params: Any) -> int:
+    """Total number of scalars in a parameter pytree."""
+    return int(sum(leaf.size for leaf in jax.tree_util.tree_leaves(params)))
+
+
+def get_layer_outputs(params: Params, x: Array, activation: str = "relu",
+                      output_activation: str = "linear") -> List[Array]:
+    """Return ``[x, h_1, ..., output]`` for inspection of activations."""
+    weights, biases = params["weights"], params["biases"]
+    outputs = [x]
     h = x
-    
-    # Forward through hidden layers with dropout
-    for i in range(len(weights) - 1):
-        h = dense_layer(h, weights[i], biases[i], activation)
-        
-        if training and dropout_rate > 0:
-            # Apply dropout
-            keep_prob = 1.0 - dropout_rate
-            mask = jr.bernoulli(keys[i], keep_prob, h.shape)
-            h = jnp.where(mask, h / keep_prob, 0.0)
-    
-    # Output layer (no dropout)
-    output = dense_layer(h, weights[-1], biases[-1], output_activation)
-    
-    return output
-
-
-def mlp_with_batch_norm(params: Dict[str, Any],
-                       x: jnp.ndarray,
-                       training: bool = True) -> jnp.ndarray:
-    """MLP with batch normalization (simplified version).
-    
-    Args:
-        params: Model parameters (should include batch norm params)
-        x: Input batch
-        training: Whether in training mode
-        
-    Returns:
-        Network output with batch normalization
-    """
-    # This is a simplified implementation
-    # In practice, you'd need running statistics for inference
-    
-    weights = params['weights']
-    biases = params['biases']
-    activation = params['activation']
-    output_activation = params['output_activation']
-    
-    h = x
-    
-    # Forward through hidden layers with batch norm
-    for i in range(len(weights) - 1):
-        # Linear transformation
-        h = h @ weights[i] + biases[i]
-        
-        # Batch normalization
-        if training:
-            mean = jnp.mean(h, axis=0, keepdims=True)
-            var = jnp.var(h, axis=0, keepdims=True)
-        else:
-            # In practice, use running statistics
-            mean = 0.0
-            var = 1.0
-        
-        h = (h - mean) / jnp.sqrt(var + 1e-5)
-        
-        # Activation
-        h = activation_fn(h, activation)
-    
-    # Output layer
-    output = dense_layer(h, weights[-1], biases[-1], output_activation)
-    
-    return output
-
-
-def count_parameters(params: Dict[str, Any]) -> int:
-    """Count total number of parameters in MLP.
-    
-    Args:
-        params: Model parameters
-        
-    Returns:
-        Total parameter count
-    """
-    total = 0
-    for W, b in zip(params['weights'], params['biases']):
-        total += W.size + b.size
-    return total
-
-
-def get_layer_outputs(params: Dict[str, Any],
-                     x: jnp.ndarray) -> List[jnp.ndarray]:
-    """Get outputs from all layers (for visualization/analysis).
-    
-    Args:
-        params: Model parameters
-        x: Input batch
-        
-    Returns:
-        List of outputs from each layer
-    """
-    weights = params['weights']
-    biases = params['biases']
-    activation = params['activation']
-    output_activation = params['output_activation']
-    
-    layer_outputs = [x]
-    h = x
-    
-    # Forward through hidden layers
-    for i in range(len(weights) - 1):
-        h = dense_layer(h, weights[i], biases[i], activation)
-        layer_outputs.append(h)
-    
-    # Output layer
-    output = dense_layer(h, weights[-1], biases[-1], output_activation)
-    layer_outputs.append(output)
-    
-    return layer_outputs
+    for w, b in zip(weights[:-1], biases[:-1]):
+        h = dense_layer(h, w, b, activation)
+        outputs.append(h)
+    outputs.append(dense_layer(h, weights[-1], biases[-1], output_activation))
+    return outputs
