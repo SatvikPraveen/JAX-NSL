@@ -1,88 +1,66 @@
-Basic Usage Examples
-====================
+Basic usage
+===========
 
-End-to-end examples for common JAX-NSL workflows.
+PRNG sequences and initialisers
+-------------------------------
 
-.. contents::
-   :local:
-   :depth: 1
+.. code-block:: python
 
-Linear Regression
+   import jax.numpy as jnp
+   from jax_nsl.core import PRNGSequence, he_normal_init, compute_fans
+
+   rng = PRNGSequence(42)
+   w = he_normal_init(next(rng), (16, 3, 3, 3), in_axis=1, out_axis=0)   # conv kernel (O, I, kh, kw)
+   print(compute_fans(w.shape, in_axis=1, out_axis=0))                    # (27, 144): receptive field counted
+
+Losses and a jitted training step
+---------------------------------
+
+.. code-block:: python
+
+   import jax, jax.numpy as jnp
+   from jax_nsl.models import create_mlp
+   from jax_nsl.training import (adamw_optimizer, cross_entropy_loss, create_learning_rate_schedule,
+                                 create_train_state, make_train_step, make_eval_step)
+
+   params, forward, _ = create_mlp([8, 32, 4], init_type="he", seed=0)
+   schedule = create_learning_rate_schedule("warmup_cosine", base_lr=3e-3, warmup_steps=20, total_steps=200)
+   init, update = adamw_optimizer(schedule, weight_decay=0.01)
+   state = create_train_state(params, init, jax.random.PRNGKey(0))
+
+   train_step = make_train_step(forward, cross_entropy_loss, update, max_grad_norm=1.0)
+   eval_step = make_eval_step(forward, cross_entropy_loss)
+
+   x = jax.random.normal(jax.random.PRNGKey(1), (128, 8))
+   y = jnp.argmax(x[:, :4], axis=1)
+   batch = {"inputs": x, "labels": y}
+   for _ in range(200):
+       state, metrics = train_step(state, batch)
+   print(eval_step(state.params, batch))   # {'val_loss': ..., 'val_accuracy': ...}
+
+Gradient checking
 -----------------
 
 .. code-block:: python
 
-   import jax
    import jax.numpy as jnp
-   from jax import grad, jit
-   from jax_nsl.core.prng import PRNGSequence
+   from jax_nsl.autodiff import gradient_check_report
 
-   # ── Data ──────────────────────────────────────────────────────────────────
-   seq = PRNGSequence(0)
-   X = jax.random.normal(next(seq), (100, 4))
-   true_w = jnp.array([1.0, -2.0, 0.5, 3.0])
-   y = X @ true_w + jax.random.normal(next(seq), (100,)) * 0.1
+   f = lambda x: jnp.sum(jnp.exp(x) * jnp.sin(x))
+   print(gradient_check_report(f, jnp.array([0.1, 0.5, 1.0])))
+   # complex-step error ~1e-7, central ~1e-4, forward ~1e-2 (float32)
 
-   # ── Model ─────────────────────────────────────────────────────────────────
-   def predict(w, x):
-       return x @ w
-
-   def loss(w, x, y):
-       return jnp.mean((predict(w, x) - y) ** 2)
-
-   # ── Training ──────────────────────────────────────────────────────────────
-   w = jnp.zeros(4)
-   lr = 0.1
-   grad_fn = jit(grad(loss))
-
-   for step in range(200):
-       g = grad_fn(w, X, y)
-       w = w - lr * g
-       if step % 50 == 0:
-           print(f"step {step:3d}  loss={loss(w, X, y):.4f}")
-
-   print("Recovered weights:", w)
-
-MLP for MNIST-like Classification
-----------------------------------
+Checkpoints
+-----------
 
 .. code-block:: python
 
    import jax
-   import jax.numpy as jnp
-   import optax
-   from jax_nsl.models.mlp import create_mlp
-   from jax_nsl.training.losses import cross_entropy_loss
-   from jax_nsl.training.train_loop import create_train_state, train_step
+   from jax_nsl.models import create_mlp
+   from jax_nsl.training import adam_optimizer, create_train_state, save_checkpoint, load_checkpoint
 
-   rng = jax.random.PRNGKey(42)
-   model = create_mlp(features=[256, 128, 10])
-
-   # Dummy data (replace with real dataset)
-   X = jax.random.normal(rng, (512, 784))
-   y = jax.random.randint(rng, (512,), 0, 10)
-
-   state = create_train_state(model, rng, learning_rate=1e-3, input_shape=(1, 784))
-
-   for epoch in range(5):
-       for i in range(0, 512, 32):
-           batch = {"image": X[i:i+32], "label": y[i:i+32]}
-           state, loss = train_step(state, batch)
-       print(f"Epoch {epoch+1}  loss={loss:.4f}")
-
-Gradient Checking
------------------
-
-.. code-block:: python
-
-   from jax_nsl.autodiff.grad_jac_hess import compute_gradient, gradient_checker
-   import jax.numpy as jnp
-
-   fun = lambda x: jnp.sum(jnp.sin(x) ** 2)
-   x0 = jnp.array([0.5, 1.0, -0.3])
-
-   analytic_g = compute_gradient(fun, x0)
-   max_err = gradient_checker(fun, x0)
-
-   print("Analytic gradient:", analytic_g)
-   print("Max finite-diff error:", max_err)
+   params, forward, _ = create_mlp([8, 32, 4], seed=0)
+   state = create_train_state(params, adam_optimizer(1e-3)[0], jax.random.key(0))  # typed key is fine
+   path = save_checkpoint(state, "/tmp/jax_nsl_ckpt", epoch=1)
+   restored = load_checkpoint(path)
+   assert int(restored.step) == int(state.step)

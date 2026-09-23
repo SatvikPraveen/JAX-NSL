@@ -1,66 +1,27 @@
-Linear Algebra API
+Linear algebra API
 ==================
 
-The ``linalg`` package provides numerically stable matrix operations and iterative linear solvers.
+``jax_nsl.linalg``: decompositions, norms, and jittable, differentiable iterative solvers.
+
+Every function's docstring explains *why* it is written the way it is (which numerical
+pitfall it avoids, which JAX rule it works around), so the API reference doubles as notes.
 
 .. contents:: Modules
    :local:
    :depth: 1
 
-linalg.ops
-----------
+jax_nsl.linalg.ops
+------------------
 
-Matrix operations including batched routines, decompositions, and norms.
-
-.. automodule:: linalg.ops
+.. automodule:: jax_nsl.linalg.ops
    :members:
    :undoc-members:
    :show-inheritance:
 
-**Key functions**:
+jax_nsl.linalg.solvers
+----------------------
 
-.. list-table::
-   :header-rows: 1
-   :widths: 35 65
-
-   * - Function
-     - Description
-   * - ``safe_matmul(A, B)``
-     - Batched matrix multiply with shape validation.
-   * - ``batched_matmul(A, B)``
-     - ``vmap``-based batch matmul.
-   * - ``stable_svd(A)``
-     - SVD with sorted singular values.
-   * - ``stable_eigh(A)``
-     - Symmetric eigendecomposition with sorted eigenvalues.
-   * - ``stable_qr(A)``
-     - QR factorisation with positive diagonal R.
-   * - ``stable_cholesky(A, eps)``
-     - Cholesky with jitter for near-singular matrices.
-   * - ``matrix_norm(A, ord)``
-     - Frobenius and operator norms.
-
-linalg.solvers
---------------
-
-Iterative linear system solvers.
-
-.. automodule:: linalg.solvers
+.. automodule:: jax_nsl.linalg.solvers
    :members:
    :undoc-members:
    :show-inheritance:
-
-**Key functions**:
-
-.. list-table::
-   :header-rows: 1
-   :widths: 35 65
-
-   * - Function
-     - Description
-   * - ``conjugate_gradient(A, b, tol, max_iter)``
-     - Solves *Ax = b* using the conjugate gradient method.
-   * - ``gradient_descent_solver(A, b, lr, max_iter)``
-     - Gradient descent for quadratic systems.
-   * - ``power_method(A, num_iter)``
-     - Dominant eigenvalue/vector via power iteration.

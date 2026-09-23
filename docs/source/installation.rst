@@ -1,130 +1,49 @@
-# File location: docs/source/installation.rst
-
 Installation
 ============
-
-This guide covers different ways to install JAX-NSL and its dependencies.
 
 Requirements
 ------------
 
-* Python 3.8+
-* JAX 0.4.0+
-* NumPy
-* SciPy
-* Matplotlib (for visualization)
-* Jupyter (for notebooks)
+* Python 3.10 or newer
+* JAX 0.4.30 or newer (the test-suite runs against current JAX; deprecated
+  APIs are treated as errors so drift is caught early)
 
-Basic Installation
-------------------
-
-Install from PyPI (when available):
-
-.. code-block:: bash
-
-   pip install jax-nsl
-
-Development Installation
-------------------------
-
-For development or to use the latest features:
-
-.. code-block:: bash
-
-   git clone https://github.com/your-repo/jax-nsl.git
-   cd jax-nsl
-   pip install -e .
-
-This will install the package in "editable" mode, so changes to the source code are immediately available.
-
-GPU Support
------------
-
-For CUDA support, install JAX with CUDA:
-
-.. code-block:: bash
-
-   # For CUDA 11.x
-   pip install "jax[cuda11_local]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
-   
-   # For CUDA 12.x
-   pip install "jax[cuda12_local]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
-
-For TPU support:
-
-.. code-block:: bash
-
-   pip install "jax[tpu]" -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
-
-Docker Installation
+Install from source
 -------------------
 
-Use the provided Docker setup:
-
 .. code-block:: bash
 
-   cd jax-nsl
-   docker-compose up jax-nsl
+   git clone https://github.com/SatvikPraveen/JAX-NSL.git
+   cd JAX-NSL
+   python -m venv .venv && source .venv/bin/activate
+   pip install -e ".[dev]"          # package + test/lint tools
+   pip install -e ".[notebook]"     # add jupyter, matplotlib, optax
 
-This will build the image and start a Jupyter Lab server accessible at http://localhost:8888.
+``uv`` works too: ``uv venv .venv && uv pip install -e ".[dev,notebook]"``.
 
-Conda Installation
-------------------
-
-Create a conda environment:
-
-.. code-block:: bash
-
-   conda create -n jax-nsl python=3.10
-   conda activate jax-nsl
-   pip install jax jaxlib
-   pip install -e .
-
-Virtual Environment
--------------------
-
-Using venv:
-
-.. code-block:: bash
-
-   python -m venv jax-nsl-env
-   source jax-nsl-env/bin/activate  # On Windows: jax-nsl-env\Scripts\activate
-   pip install -r requirements.txt
-   pip install -e .
-
-Verification
+Accelerators
 ------------
 
-Test your installation:
+JAX wheels are backend-specific; follow the
+`official installation guide <https://docs.jax.dev/en/latest/installation.html>`_
+for your CUDA/ROCm/TPU version, then ``pip install -e .`` on top.
 
-.. code-block:: python
+Several virtual devices on a laptop
+-----------------------------------
 
-   import jax
-   import jax.numpy as jnp
-   from jax_nsl.core import arrays
-   
-   # Check JAX backend
-   print(f"JAX backend: {jax.default_backend()}")
-   print(f"Available devices: {jax.devices()}")
-   
-   # Test basic functionality
-   x = jnp.array([1., 2., 3.])
-   y = x ** 2
-   print(f"Test array: {y}")
+The parallelism utilities and notebooks need more than one device. On CPU
+you can ask XLA to expose several *virtual* devices - the test-suite does
+this in ``tests/conftest.py``::
 
-If you see output without errors, your installation is successful!
+   import os
+   os.environ["XLA_FLAGS"] = "--xla_force_host_platform_device_count=8"
+   import jax  # must come after setting the flag
+   jax.devices()  # 8 CpuDevices
 
-Common Issues
--------------
+Verify
+------
 
-**ImportError: No module named 'jax'**
-   Install JAX: ``pip install jax jaxlib``
+.. code-block:: bash
 
-**CUDA not found**
-   Install CUDA-enabled JAX following the GPU Support section above.
-
-**Permission denied errors**
-   Use ``--user`` flag: ``pip install --user jax-nsl``
-
-**Version conflicts**
-   Create a fresh virtual environment and install dependencies step by step.
+   pytest -q                 # 275 tests, ~45 s on a laptop
+   make notebooks            # execute all 21 notebooks (takes a few minutes)

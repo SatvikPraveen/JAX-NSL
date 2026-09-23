@@ -1,104 +1,90 @@
-Advanced Patterns
+Advanced patterns
 =================
 
-More sophisticated JAX-NSL patterns for research and production use.
-
-.. contents::
-   :local:
-   :depth: 1
-
-Custom VJP / JVP
-----------------
-
-Register a custom backward pass using ``@jax.custom_vjp``:
+Implicit differentiation through a fixed point
+----------------------------------------------
 
 .. code-block:: python
 
+   import jax, jax.numpy as jnp
+   from jax_nsl.autodiff import fixed_point
+
+   def f(params, x):            # contraction map x -> f(params, x)
+       a, b = params
+       return jnp.tanh(a * x + b)
+
+   solve = lambda p: fixed_point(f, p, jnp.array(0.0), tolerance=1e-7)
+   x_star = solve((jnp.array(0.5), jnp.array(0.3)))
+   g = jax.grad(lambda p: solve(p))((jnp.array(0.5), jnp.array(0.3)))   # via the adjoint fixed point
+
+Hessian-vector products and curvature
+-------------------------------------
+
+.. code-block:: python
+
+   import jax, jax.numpy as jnp
+   from jax_nsl.autodiff import hvp, hessian_trace_hutchinson
+
+   loss = lambda w: jnp.sum(jnp.tanh(w) ** 2)
+   w = jnp.linspace(-1, 1, 1000)
+   Hv = hvp(loss, w, jnp.ones_like(w))                            # never forms the 1000x1000 Hessian
+   tr = hessian_trace_hutchinson(loss, w, jax.random.PRNGKey(0), num_samples=64)
+
+Per-example gradients and DP-style clipping
+-------------------------------------------
+
+.. code-block:: python
+
+   import jax, jax.numpy as jnp
+   from jax_nsl.transforms import per_example_gradients, clip_per_example_gradients
+
+   params = {"w": jnp.zeros(4), "b": jnp.zeros(())}
+   loss = lambda p, x, y: (p["w"] @ x + p["b"] - y) ** 2
+   xs = jax.random.normal(jax.random.PRNGKey(0), (32, 4))
+   ys = xs[:, 0]
+   pe = per_example_gradients(loss, params, xs, ys)               # leaves have a leading batch axis
+   g = clip_per_example_gradients(pe, max_norm=1.0)               # clip each example, then average
+
+A transformer stack as one scan, with remat
+-------------------------------------------
+
+.. code-block:: python
+
+   import jax, jax.numpy as jnp
+   from jax_nsl.models import create_transformer, create_causal_mask
+
+   params, forward = create_transformer(d_model=64, num_heads=4, num_layers=6, vocab_size=100,
+                                        max_seq_len=32, remat=True)
+   tokens = jax.random.randint(jax.random.PRNGKey(0), (2, 16), 0, 100)
+   out = jax.jit(forward)(params, tokens, mask=create_causal_mask(16))
+   print(params["layers"]["attention"]["query"].shape)             # (6, 64, 64): layers stacked
+
+Tensor-parallel partitioning of that stack
+------------------------------------------
+
+.. code-block:: python
+
+   import os
+   os.environ.setdefault("XLA_FLAGS", "--xla_force_host_platform_device_count=8")
    import jax
-   import jax.numpy as jnp
-   from jax_nsl.autodiff.custom_vjp import smooth_abs_vjp
+   from jax_nsl.models import create_transformer
+   from jax_nsl.parallel import create_mesh, partition_params, create_transformer_partition_specs, sharding_summary
 
-   x = jnp.array([-2.0, 0.0, 3.0])
-   y = smooth_abs_vjp(x)        # ≈ |x| but smooth around 0
-   g = jax.grad(lambda z: jnp.sum(smooth_abs_vjp(z)))(x)
-   print(y, g)
+   mesh = create_mesh((8,), ("model",))
+   params, _ = create_transformer(d_model=64, num_heads=4, num_layers=2, vocab_size=100, max_seq_len=32)
+   sharded = partition_params(params, create_transformer_partition_specs("model"), mesh)
+   print(sharding_summary(sharded)["['layers']['ffn']['W1']"])   # P(None, None, 'model')
 
-Per-sample Gradients with vmap
--------------------------------
-
-Compute individual-sample gradients without slow looping:
+Gradient accumulation without extra memory
+------------------------------------------
 
 .. code-block:: python
 
-   import jax
-   from jax_nsl.transforms.vmap_utils import batch_gradient
+   import jax, jax.numpy as jnp
+   from jax_nsl.models import create_mlp
+   from jax_nsl.training import accumulate_gradients, split_into_microbatches, cross_entropy_loss
 
-   def loss_per_sample(params, x, y):
-       pred = params["w"] @ x + params["b"]
-       return (pred - y) ** 2
-
-   params = {"w": jnp.ones(4), "b": jnp.zeros(())}
-   X = jax.random.normal(jax.random.PRNGKey(0), (32, 4))
-   Y = jax.random.normal(jax.random.PRNGKey(1), (32,))
-
-   per_sample_grads = batch_gradient(
-       lambda p: loss_per_sample(p, X[0], Y[0]),
-       params,
-   )
-
-Scan-based RNN
---------------
-
-Efficient sequential computation with ``lax.scan``:
-
-.. code-block:: python
-
-   from jax_nsl.transforms.scan_utils import scan_sequence
-   import jax.numpy as jnp
-
-   def rnn_step(h, x):
-       h_next = jnp.tanh(h @ W_h + x @ W_x + b)
-       return h_next, h_next   # (carry, output)
-
-   h0 = jnp.zeros(hidden_size)
-   final_h, all_h = scan_sequence(rnn_step, h0, xs)
-
-Data Parallelism with pmap
----------------------------
-
-Replicate a training step across all available devices:
-
-.. code-block:: python
-
-   import jax
-   from jax_nsl.parallel.pmap_utils import replicate, unreplicate, pmapped_train_step
-
-   state = create_train_state(model, rng, lr=1e-3, input_shape=(1, 784))
-   state = replicate(state)
-
-   for batch in dataloader:
-       # Split batch: (B, ...) → (n_devices, B//n_devices, ...)
-       batch = jax.tree_util.tree_map(
-           lambda x: x.reshape(jax.device_count(), -1, *x.shape[1:]), batch
-       )
-       state = pmapped_train_step(state, batch)
-
-   # Retrieve params from device 0
-   params = unreplicate(state).params
-
-Benchmarking JIT Compilation
------------------------------
-
-.. code-block:: python
-
-   from jax_nsl.transforms.jit_utils import benchmark_jit
-   import jax.numpy as jnp
-
-   def matmul(A, B):
-       return A @ B
-
-   A = jnp.ones((1024, 1024))
-   B = jnp.ones((1024, 1024))
-
-   warmup_t, mean_t = benchmark_jit(matmul, A, B, warmup_runs=3, benchmark_runs=20)
-   print(f"Warmup: {warmup_t*1e3:.1f} ms   Steady-state: {mean_t*1e3:.2f} ms")
+   params, forward, _ = create_mlp([4, 16, 2], seed=0)
+   batch = {"inputs": jnp.ones((64, 4)), "labels": jnp.zeros(64, jnp.int32)}
+   loss = lambda p, b: cross_entropy_loss(forward(p, b["inputs"]), b["labels"])
+   mean_loss, grads = accumulate_gradients(loss, params, split_into_microbatches(batch, 8))

@@ -1,47 +1,42 @@
 Changelog
 =========
 
-All notable changes to JAX-NSL are documented here.
-The format follows `Keep a Changelog <https://keepachangelog.com/en/1.0.0/>`_.
+0.2.0 - 2026-09-23
+------------------
 
-Unreleased
-----------
+A review of the whole project: the package now imports, every function is
+tested (275 tests) and all 21 notebooks execute on current JAX.
 
-Added
-~~~~~
+Changed
+~~~~~~~
 
-* ``check_finite`` utility in ``core.arrays``.
-* ``stable_logsumexp``, ``stable_softmax``, ``safe_sqrt``, ``numerical_gradient`` in ``core.numerics``.
-* ``compute_gradient``, ``compute_jacobian``, ``compute_hessian`` convenience wrappers in ``autodiff.grad_jac_hess``.
-* ``smooth_abs_vjp`` and ``smooth_abs_jvp`` custom differentiation examples.
-* ``sync_gradients``, ``shard_array``, ``distributed_dot``, ``sync_batch_stats`` in ``parallel``.
-* ``jit_with_static``, ``efficient_jit``, ``benchmark_jit`` in ``transforms.jit_utils``.
-* ``batched_matmul``, ``batched_gradient``, ``parallel_apply`` in ``transforms.vmap_utils``.
-* ``cumulative_sum``, ``solve_ode`` in ``transforms.scan_utils``.
-* ``clip_gradient`` convenience wrapper in ``transforms.control_flow``.
-* Full test suites: ``test_core``, ``test_models``, ``test_linalg``, ``test_training``.
-* Shared ``conftest.py`` with pytest fixtures.
-* ``pytest.ini`` with ``pythonpath = src``.
-* ``pyproject.toml`` with black, isort, mypy, ruff configuration.
-* ``Makefile`` with ``install``, ``test``, ``lint``, ``format``, ``typecheck``, ``docs``, ``clean`` targets.
-* GitHub Actions CI workflow (lint, typecheck, test on Python 3.9/3.10/3.11).
-* Comprehensive documentation: quickstart, tutorials, API reference, examples, contributing, changelog.
+* Package is ``jax_nsl`` under ``src/`` (was an unimportable ``src`` package).
+* ``core.numerics``: precision-correct ``log_softmax_stable``; gradient-safe
+  ``stable_sigmoid``; dtype-aware finite-difference steps.
+* ``linalg.solvers``: preconditioned, matrix-free, implicitly differentiable
+  CG; ``jit``-able L-BFGS, Lanczos and power iteration.
+* ``autodiff``: ``checkify``-based ``safe_grad``; HVPs, Hutchinson trace,
+  complex-step differences; new ``implicit`` module (fixed points, Newton).
+* ``transforms``: honest ``jit`` helpers (retrace counter, AOT compile info),
+  RK4 ``scan`` integrator, correct remat scan, ``linear_recurrence`` via
+  ``associative_scan``, per-example gradients, chunked ``vmap``.
+* ``models``: parameters are array-only pytrees; NHWC convolutions; batch
+  norm with explicit running state; Transformer as a ``scan`` over stacked
+  layers with remat, RoPE, pre/post-LN, mask-safe softmax.
+* ``training``: working optimiser states (previous NamedTuple subclasses
+  had no fields), schedules, Lion, EMA, jitted step factories, gradient
+  accumulation, bf16 mixed precision, checkpoints with typed keys.
+* ``parallel``: ``jit`` + ``NamedSharding`` replaces ``pjit``; regex-based
+  partition rules; ``shard_map`` examples; real ring all-reduce; correct
+  broadcast; tests run on 8 virtual CPU devices.
+* ``utils``: pytree helpers on ``jax.tree_util`` key paths; benchmarking
+  that blocks on outputs and reports device/compiled-program memory.
+* Notebooks updated for current JAX (``jax.tree.map``, ``jax.sharding``)
+  and fixed where the code itself was wrong (inverted causal mask,
+  wrong shapes, undefined names).
+* Tooling: ruff/black/isort clean, CI executes notebooks, pre-commit.
 
-[0.1.0] – Initial Release
---------------------------
+0.1.0
+-----
 
-Added
-~~~~~
-
-* Core modules: ``core.arrays``, ``core.numerics``, ``core.prng``.
-* Autodiff modules: ``autodiff.grad_jac_hess``, ``autodiff.custom_vjp``, ``autodiff.custom_jvp``.
-* Transform modules: ``transforms.jit_utils``, ``transforms.vmap_utils``, ``transforms.scan_utils``, ``transforms.control_flow``.
-* Linear algebra modules: ``linalg.ops``, ``linalg.solvers``.
-* Model modules: ``models.mlp``, ``models.cnn``, ``models.transformer``.
-* Training modules: ``training.losses``, ``training.optimizers``, ``training.train_loop``.
-* Parallel modules: ``parallel.pmap_utils``, ``parallel.pjit_utils``, ``parallel.collectives``.
-* Utility modules: ``utils.benchmarking``, ``utils.tree_utils``.
-* 21 educational Jupyter notebooks across 7 topic areas.
-* Synthetic data generation scripts.
-* Docker and docker-compose configuration.
-* Sphinx documentation scaffold.
+Initial release: 21 notebooks and the first version of the reference modules.

@@ -37,6 +37,7 @@ dependencies = [
 notebook = [
     "jupyter>=1.0.0",
     "optax>=0.2.0",
+    "psutil>=5.9.0",
     "nbconvert>=7.0.0",
     "ipykernel>=6.0.0",
     "matplotlib>=3.5.0",

@@ -1,82 +1,43 @@
 Transforms API
 ==============
 
-The ``transforms`` package wraps JAX's functional transformations (``jit``, ``vmap``, ``scan``, and control-flow primitives) with convenience utilities.
+``jax_nsl.transforms``: ``jit`` diagnostics, ``vmap`` patterns, ``scan``/ODE/remat utilities, and structured control flow.
+
+Every function's docstring explains *why* it is written the way it is (which numerical
+pitfall it avoids, which JAX rule it works around), so the API reference doubles as notes.
 
 .. contents:: Modules
    :local:
    :depth: 1
 
-transforms.jit_utils
----------------------
+jax_nsl.transforms.jit_utils
+----------------------------
 
-JIT compilation helpers.
-
-.. automodule:: transforms.jit_utils
+.. automodule:: jax_nsl.transforms.jit_utils
    :members:
    :undoc-members:
    :show-inheritance:
 
-**Key functions**:
+jax_nsl.transforms.vmap_utils
+-----------------------------
 
-.. list-table::
-   :header-rows: 1
-   :widths: 35 65
-
-   * - Function
-     - Description
-   * - ``smart_jit`` / ``efficient_jit``
-     - JIT with automatic static argument detection.
-   * - ``jit_with_static(fun, static_argnums)``
-     - Thin wrapper around ``jax.jit`` with explicit static args.
-   * - ``warmup_jit(fun, *args)``
-     - Runs one warmup compilation step.
-   * - ``benchmark_jit(fun, *args)``
-     - Times both warmup and steady-state execution.
-
-transforms.vmap_utils
----------------------
-
-Vectorisation helpers.
-
-.. automodule:: transforms.vmap_utils
+.. automodule:: jax_nsl.transforms.vmap_utils
    :members:
    :undoc-members:
    :show-inheritance:
 
-**Key functions**:
+jax_nsl.transforms.scan_utils
+-----------------------------
 
-.. list-table::
-   :header-rows: 1
-   :widths: 35 65
-
-   * - Function
-     - Description
-   * - ``batch_apply(fun, xs)``
-     - Applies *fun* over a batch axis.
-   * - ``batch_gradient(fun, xs)``
-     - Per-sample gradients via ``vmap(grad(fun))``.
-   * - ``batched_matmul(A, B)``
-     - Vectorised ``jnp.matmul`` over a batch dimension.
-   * - ``vmap_with_signature``
-     - ``vmap`` with explicit in/out-axes specification.
-
-transforms.scan_utils
----------------------
-
-``lax.scan``-based sequential computation utilities.
-
-.. automodule:: transforms.scan_utils
+.. automodule:: jax_nsl.transforms.scan_utils
    :members:
    :undoc-members:
    :show-inheritance:
 
-transforms.control_flow
-------------------------
+jax_nsl.transforms.control_flow
+-------------------------------
 
-JAX control-flow utilities (``cond``, ``while_loop``, ``switch``).
-
-.. automodule:: transforms.control_flow
+.. automodule:: jax_nsl.transforms.control_flow
    :members:
    :undoc-members:
    :show-inheritance:

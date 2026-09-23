@@ -1,4 +1,4 @@
-.PHONY: all install install-dev test test-cov lint format typecheck docs clean help
+.PHONY: all install install-dev install-nb test test-cov test-fast lint format format-check typecheck notebooks docs docs-serve clean help
 
 PYTHON   := python
 PYTEST   := pytest
@@ -50,6 +50,14 @@ format-check:
 ## typecheck    Run mypy static type checking
 typecheck:
 	$(PYTHON) -m mypy $(SRC)
+
+## notebooks    Execute every notebook (fails on the first error)
+notebooks:
+	@set -e; for nb in notebooks/*/*.ipynb; do \
+		echo "=== $$nb"; \
+		MPLBACKEND=Agg jupyter nbconvert --to notebook --execute --ExecutePreprocessor.timeout=1500 \
+			--output-dir /tmp/jax-nsl-notebooks "$$nb"; \
+	done
 
 ## docs         Build HTML documentation with Sphinx
 docs:

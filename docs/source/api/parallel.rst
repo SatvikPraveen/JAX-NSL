@@ -1,72 +1,35 @@
 Parallel API
 ============
 
-The ``parallel`` package provides utilities for data parallelism (``pmap``) and model/tensor parallelism (``pjit``).
+``jax_nsl.parallel``: ``pmap`` data parallelism, ``jit`` + ``NamedSharding`` / ``shard_map`` model parallelism, and collectives.
+
+Every function's docstring explains *why* it is written the way it is (which numerical
+pitfall it avoids, which JAX rule it works around), so the API reference doubles as notes.
 
 .. contents:: Modules
    :local:
    :depth: 1
 
-parallel.pmap_utils
--------------------
+jax_nsl.parallel.pmap_utils
+---------------------------
 
-Data-parallel utilities built on ``jax.pmap``.
-
-.. automodule:: parallel.pmap_utils
+.. automodule:: jax_nsl.parallel.pmap_utils
    :members:
    :undoc-members:
    :show-inheritance:
 
-**Key functions**:
+jax_nsl.parallel.pjit_utils
+---------------------------
 
-.. list-table::
-   :header-rows: 1
-   :widths: 35 65
-
-   * - Function
-     - Description
-   * - ``replicate(x)``
-     - Replicates arrays across all local devices.
-   * - ``unreplicate(x)``
-     - Takes the first-device shard of a replicated array.
-   * - ``pmapped_train_step(state, batch)``
-     - Data-parallel training step using ``pmap``.
-   * - ``sync_gradients(gradients)``
-     - All-reduce (mean) gradients across devices via ``lax.pmean``.
-
-parallel.pjit_utils
--------------------
-
-Model/tensor parallelism utilities (JAX's ``pjit`` / ``jit`` with ``Mesh``).
-
-.. automodule:: parallel.pjit_utils
+.. automodule:: jax_nsl.parallel.pjit_utils
    :members:
    :undoc-members:
    :show-inheritance:
 
-parallel.collectives
---------------------
+jax_nsl.parallel.collectives
+----------------------------
 
-Low-level collective communication primitives.
-
-.. automodule:: parallel.collectives
+.. automodule:: jax_nsl.parallel.collectives
    :members:
    :undoc-members:
    :show-inheritance:
-
-**Key functions**:
-
-.. list-table::
-   :header-rows: 1
-   :widths: 35 65
-
-   * - Function
-     - Description
-   * - ``all_reduce_sum(x, axis_name)``
-     - ``lax.psum`` wrapper.
-   * - ``all_reduce_mean(x, axis_name)``
-     - ``lax.pmean`` wrapper.
-   * - ``distributed_dot(x, y, axis_name)``
-     - Distributed matrix–vector dot product.
-   * - ``sync_batch_stats(batch_stats, axis_name)``
-     - Synchronises batch normalisation statistics across devices.

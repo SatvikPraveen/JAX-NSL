@@ -1,391 +1,121 @@
-# JAX-NSL: Neural Scientific Learning with JAX
+# JAX-NSL: Numerics and Systems Lab in JAX
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
-[![JAX](https://img.shields.io/badge/JAX-0.4.0+-orange.svg)](https://github.com/google/jax)
+[![CI](https://github.com/SatvikPraveen/JAX-NSL/actions/workflows/ci.yml/badge.svg)](https://github.com/SatvikPraveen/JAX-NSL/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
-[![Imports: isort](https://img.shields.io/badge/%20imports-isort-%231674b1?style=flat&labelColor=ef8336)](https://pycqa.github.io/isort/)
-[![Type checked: mypy](https://img.shields.io/badge/type%20checked-mypy-blue.svg)](https://github.com/python/mypy)
-[![GPU](https://img.shields.io/badge/GPU-CUDA%2011.0+-green.svg)](https://developer.nvidia.com/cuda-toolkit)
-[![TPU](https://img.shields.io/badge/TPU-Compatible-red.svg)](https://cloud.google.com/tpu)
-[![Docker](https://img.shields.io/badge/Docker-Supported-blue.svg)](https://www.docker.com/)
-[![Jupyter](https://img.shields.io/badge/Jupyter-21%20Notebooks-orange.svg)](https://jupyter.org/)
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](http://makeapullrequest.com)
-[![Made with ❤️](https://img.shields.io/badge/Made%20with-❤️-red.svg)](https://github.com/SatvikPraveen/JAX-NSL)
 
-A comprehensive, self-directed learning resource and reference guide for mastering JAX. This repository provides 21 interactive notebooks and production-grade implementations covering everything from JAX fundamentals to advanced neural scientific computing techniques.
+A learning resource and reference library for JAX, from array semantics and
+autodiff through numerically careful linear algebra and training code to
+multi-device parallelism. It has two halves that are kept honest by CI:
 
-## 🎯 Project Overview
+- **21 notebooks** (`notebooks/`) that are self-contained and executed end to
+  end on every push, so they always run on current JAX.
+- **`jax_nsl`** (`src/jax_nsl/`), a tested package (275 tests) whose docstrings
+  explain the *reasoning* behind each function: which float32 limit it works
+  around, which JAX rule it respects, what the alternative costs.
 
-JAX-NSL is designed as a **one-stop learning resource** for mastering syntactical and conceptual understanding of JAX. Whether you're learning JAX for the first time or deepening your expertise, this repository provides clear, practical guidance with runnable examples at every step.
+## What you will find
 
-**Key Characteristics:**
-- **21 Interactive Notebooks**: Structured learning path from fundamentals to research-grade techniques
-- **Reference Implementations**: Production-quality source code organized by topic
-- **Complete Test Coverage**: Comprehensive test suite for all modules
-- **Self-Contained**: Each notebook is independent and can be studied in any order
+| Package | Highlights |
+| --- | --- |
+| `core` | log-softmax that keeps its digits at logits of 1000, a sigmoid with finite gradients at ±1000 (the double-`where` trick), dtype-aware finite differences, initialisers that count a conv kernel's receptive field |
+| `autodiff` | `checkify`-based NaN detection, Hessian-vector products, Hutchinson trace, Gauss-Newton products, complex-step gradient checks, **implicit differentiation** of fixed points and Newton solves |
+| `transforms` | retrace counter, AOT compile info (FLOPs, bytes), per-example gradients, chunked `vmap`, RK4 as a `scan`, remat scans, parallel linear recurrences with `associative_scan`, a gradient-norm-clipping function transform |
+| `linalg` | preconditioned, matrix-free CG whose gradient is an **adjoint solve** (not an unrolled loop), a fully `jit`-able L-BFGS, Lanczos, power iteration |
+| `models` | MLP, CNN in NHWC without transposes, batch norm with explicit running state, a Transformer whose layer stack is a single `scan` with optional `jax.checkpoint`, RoPE, pre/post-LN, mask-safe softmax |
+| `training` | optimisers as `(init, update)` pairs with schedules, Lion, EMA, jitted train-step factories, gradient accumulation in `scan`, bf16 mixed precision, fp16 loss scaling, checkpoints that survive typed PRNG keys |
+| `parallel` | `pmap` steps, `jit` + `NamedSharding` partition rules (FSDP-style, Megatron-style), `shard_map` matmuls, a **real ring all-reduce built from `ppermute`**; everything tested on 8 virtual CPU devices |
+| `utils` | pytree helpers over `jax.tree_util` key paths, benchmarking that blocks on outputs and reports compiled-program memory |
 
-### Core Philosophy
-
-- **Pure JAX Implementation**: Leverages JAX's native capabilities without high-level abstractions
-- **Scientific Rigor**: Emphasizes numerical stability and mathematical correctness
-- **Scalability First**: Designed for single-device to multi-cluster deployment
-- **Research-Grade**: Implements cutting-edge techniques and optimization strategies
-
-## 🏗️ Architecture
-
-```
-jax-nsl/
-├── 📚 src/                     # Core library implementation
-│   ├── 🧮 core/               # Fundamental operations and utilities
-│   ├── 🔄 autodiff/           # Automatic differentiation extensions
-│   ├── 📐 linalg/             # Linear algebra and numerical methods
-│   ├── 🧠 models/             # Neural network architectures
-│   ├── 🎯 training/           # Optimization and training utilities
-│   ├── ⚡ transforms/          # JAX transformations and control flow
-│   ├── 🌐 parallel/           # Distributed computing primitives
-│   └── 🛠️ utils/              # Benchmarking and tree utilities
-├── 📖 notebooks/              # Educational and demonstration materials
-│   ├── 01_fundamentals/       # JAX basics and core concepts
-│   ├── 02_linear_algebra/     # Matrix operations and solvers
-│   ├── 03_neural_networks/    # Network architectures from scratch
-│   ├── 04_training_optimization/ # Training loops and optimizers
-│   ├── 05_parallelism/        # Multi-device and distributed computing
-│   ├── 06_special_topics/     # Advanced research techniques
-│   └── capstone_projects/     # Complex implementations
-├── 🧪 tests/                  # Comprehensive test suite
-├── 📊 data/                   # Synthetic data generation
-├── 📑 docs/                   # Documentation and guides
-└── 🐳 docker/                 # Containerization setup
-```
-
-## ✨ Key Features
-
-### 🔬 Scientific Computing
-
-- **Numerical Stability**: Implements numerically stable algorithms for production use
-- **Custom Derivatives**: Advanced VJP/JVP implementations for complex operations
-- **Physics-Informed Networks**: Differential equation solvers with neural networks
-- **Probabilistic Computing**: Bayesian methods and stochastic optimization
-
-### ⚡ Performance Optimization
-
-- **JIT Compilation**: Optimized compilation strategies for maximum performance
-- **Memory Efficiency**: Gradient checkpointing and mixed-precision training
-- **Vectorization**: Efficient batching and SIMD utilization
-- **Profiling Tools**: Built-in performance analysis and debugging utilities
-
-### 🌐 Distributed Computing
-
-- **Multi-Device Training**: Seamless scaling across GPUs and TPUs
-- **Model Parallelism**: Sharding strategies for large-scale models
-- **Data Parallelism**: Efficient batch distribution and gradient synchronization
-- **Collective Operations**: Advanced communication patterns for distributed training
-
-### 🧠 Neural Architectures
-
-- **Transformers**: Attention mechanisms with linear scaling optimizations
-- **Convolutional Networks**: Efficient convolution implementations
-- **Recurrent Models**: Modern RNN variants and sequence modeling
-- **Graph Networks**: Message passing and attention-based graph models
-
-## 📚 Learning Path
-
-### Foundation Level
-
-1. **JAX Fundamentals** - Array operations, PRNG systems, functional programming
-2. **Automatic Differentiation** - Forward and reverse-mode AD, custom gradients
-3. **Linear Algebra** - Matrix decompositions, iterative solvers, numerical methods
-
-### Intermediate Level
-
-4. **Neural Networks** - MLPs, CNNs, attention mechanisms from first principles
-5. **Training Systems** - Optimizers, loss functions, training loop patterns
-6. **Numerical Stability** - Precision handling, overflow prevention, robust algorithms
-
-### Advanced Level
-
-7. **Parallel Computing** - Multi-device coordination, sharding strategies
-8. **Research Techniques** - Advanced optimizations, memory management, debugging
-9. **Specialized Applications** - Physics-informed networks, probabilistic methods
-
-### Capstone Projects
-
-- **Physics-Informed Neural Networks**: Solving PDEs with deep learning
-- **Large-Scale Training**: Distributed training of transformer models
-
-## 🚀 Quick Start
-
-### Prerequisites
-
-```bash
-# Minimum requirements
-Python 3.8+
-JAX >= 0.4.0
-NumPy >= 1.21.0
-```
-
-### Installation
-
-#### Standard Installation
+## Install
 
 ```bash
 git clone https://github.com/SatvikPraveen/JAX-NSL.git
 cd JAX-NSL
-pip install -r requirements.txt
-pip install -e .
+python -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev,notebook]"
+pytest -q            # ~45 s on a laptop; parallel tests use 8 virtual CPU devices
+make notebooks       # execute all 21 notebooks
 ```
 
-#### GPU Support
+For GPU/TPU wheels follow the [JAX installation guide](https://docs.jax.dev/en/latest/installation.html)
+first, then `pip install -e .`.
 
-```bash
-# For CUDA 11.x
-pip install "jax[cuda11_pip]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
-
-# For CUDA 12.x
-pip install "jax[cuda12_pip]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
-```
-
-#### Docker Environment
-
-```bash
-docker-compose -f docker/docker-compose.yml up --build
-# Access Jupyter at http://localhost:8888
-```
-
-### Verification
-
-```bash
-# Run test suite
-pytest tests/ -v
-
-# Verify JAX installation
-python -c "import jax; print(f'JAX version: {jax.__version__}'); print(f'Devices: {jax.devices()}')"
-
-# Generate synthetic data
-python data/synthetic/generate_data.py
-```
-
-## 📖 Usage Examples
-
-### Basic Neural Network
+## A taste
 
 ```python
-from src.models.mlp import MLP
-from src.training.optimizers import create_adam_optimizer
-from src.core.arrays import init_glorot_normal
-import jax.numpy as jnp
+import jax, jax.numpy as jnp
+from jax_nsl.linalg import conjugate_gradient
+from jax_nsl.autodiff import fixed_point, hvp
+from jax_nsl.models import create_transformer, create_causal_mask
+from jax_nsl.training import adam_optimizer, cross_entropy_loss, create_train_state, make_train_step
+
+# A solver you can differentiate through (adjoint solve, no unrolling).
+a = jnp.array([[4.0, 1.0], [1.0, 3.0]])
+g = jax.grad(lambda a: conjugate_gradient(a, jnp.ones(2))[0].sum())(a)
+
+# A fixed point with an implicit gradient.
+f = lambda p, x: jnp.tanh(p * x + 0.3)
+dx_dp = jax.grad(lambda p: fixed_point(f, p, jnp.array(0.0)))(jnp.array(0.5))
+
+# A transformer whose 12 layers compile as one scan under remat.
+params, forward = create_transformer(d_model=128, num_heads=4, num_layers=12, vocab_size=1000, remat=True)
+logits = jax.jit(forward)(params, jnp.zeros((2, 16), jnp.int32), mask=create_causal_mask(16))
+
+# A jitted training step with clipping and metrics.
+init, update = adam_optimizer(1e-3)
+state = create_train_state(params, init, jax.random.PRNGKey(0))
+step = make_train_step(forward, cross_entropy_loss, update, max_grad_norm=1.0)
+```
+
+Sharding on a laptop:
+
+```python
+import os; os.environ["XLA_FLAGS"] = "--xla_force_host_platform_device_count=8"
 import jax
+from jax_nsl.parallel import P, create_mesh, partition_params, create_transformer_partition_specs
 
-# Initialize model
-key = jax.random.PRNGKey(42)
-model = MLP([784, 256, 128, 10])
-params = model.init(key)
-
-# Setup training
-optimizer = create_adam_optimizer(learning_rate=1e-3)
-opt_state = optimizer.init(params)
-
-# Training step
-def train_step(params, opt_state, batch):
-    loss, grads = jax.value_and_grad(model.loss)(params, batch)
-    updates, opt_state = optimizer.update(grads, opt_state)
-    params = optax.apply_updates(params, updates)
-    return params, opt_state, loss
+mesh = create_mesh((8,), ("model",))
+sharded = partition_params(params, create_transformer_partition_specs("model"), mesh)
 ```
 
-### Distributed Training
+## Notebooks
 
-```python
-from src.parallel.pjit_utils import create_mesh, shard_params
-from src.models.transformer import Transformer
-from jax.experimental import pjit
+| | Section | Notebooks |
+| --- | --- | --- |
+| 01 | Fundamentals | arrays & PRNG, autodiff, custom VJP/JVP, control flow & scan |
+| 02 | Linear algebra | matrix ops, iterative solvers (CG, PCG, GMRES), numerical stability |
+| 03 | Neural networks | MLP, CNN, attention from scratch |
+| 04 | Training | optimisers, losses, training loops with checkpointing |
+| 05 | Parallelism | `pmap`, `jit` + sharding (formerly `pjit`), collectives |
+| 06 | Special topics | differentiable ODEs, probabilistic gradients, research tricks |
+| 07 | Capstones | physics-informed neural networks, large-scale sharded training |
 
-# Setup device mesh
-mesh = create_mesh(devices=jax.devices(), mesh_shape=(4, 2))
+The notebooks do not import `jax_nsl`; they build everything inline so each
+one reads on its own. The package is where the same ideas are written
+carefully and tested.
 
-# Shard model parameters
-with mesh:
-    sharded_params = shard_params(params, partition_spec)
-
-    # Distributed forward pass
-    @pjit.pjit(in_axis_resources=(...), out_axis_resources=(...))
-    def distributed_forward(params, inputs):
-        return model.forward(params, inputs)
-```
-
-### Physics-Informed Networks
-
-```python
-from src.models.pinn import PINN
-from src.training.losses import pde_loss
-
-# Define PDE: ∂u/∂t = ∂²u/∂x²
-def heat_equation_residual(params, x, t):
-    u = pinn.forward(params, x, t)
-    u_t = jax.grad(lambda t: pinn.forward(params, x, t))(t)
-    u_xx = jax.grad(jax.grad(lambda x: pinn.forward(params, x, t)))(x)
-    return u_t - u_xx
-
-# Training with physics constraints
-pinn = PINN(layers=[2, 50, 50, 1])
-loss = pde_loss(heat_equation_residual, boundary_conditions, initial_conditions)
-```
-
-## 🧪 Testing
-
-The project includes comprehensive testing across all modules:
+## Development
 
 ```bash
-# Run all tests
-pytest tests/
-
-# Test specific modules
-pytest tests/test_autodiff.py -v
-pytest tests/test_parallel.py -v
-pytest tests/test_numerics.py -v
-
-# Run with coverage
-pytest --cov=src tests/
-
-# Performance benchmarks
-python -m pytest tests/ -k "benchmark" --benchmark-only
+make lint          # ruff
+make format        # black + isort
+make test          # pytest
+make test-cov      # with coverage
+make notebooks     # execute every notebook with nbconvert
+pre-commit install # optional hooks (ruff, black, isort, nbstripout)
 ```
 
-## 📊 Benchmarks
+CI runs lint, the test-suite on Python 3.10 to 3.12, and executes all
+notebooks. Deprecation warnings raised from `jax_nsl` fail the tests, so API
+drift in JAX shows up immediately.
 
-Performance characteristics on various hardware configurations:
+## Layout
 
-### Single Device (V100)
+See [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md). Documentation sources are
+in `docs/` (Sphinx, `make docs`).
 
-- **MLP Forward Pass**: ~2.3ms (batch_size=1024, hidden=[512, 256, 128])
-- **Transformer Layer**: ~5.1ms (seq_len=512, embed_dim=512, 8 heads)
-- **Convolution**: ~1.8ms (224x224x3 → 224x224x64, 3x3 kernel)
+## License
 
-### Multi-Device (8x V100)
-
-- **Data Parallel Training**: 7.2x speedup (transformer, batch_size=512)
-- **Model Parallel Training**: 5.8x speedup (large transformer, 1B parameters)
-- **Pipeline Parallel**: 6.4x speedup (deep networks, 24+ layers)
-
-## 📈 Project Statistics
-
-- **21 Jupyter Notebooks**: ~50+ hours of comprehensive learning material
-- **8 Topic-Organized Modules**: 3000+ lines of reference implementations
-- **4 Test Modules**: Comprehensive test coverage
-- **Docker & Data Generation**: Complete development environment setup
-- **Documentation**: Guides and API reference
-- **Multi-Platform Support**: CPU, GPU, TPU compatibility
-
-## 🛠️ Development
-
-### Code Style
-
-```bash
-# Format code
-black src/ tests/
-isort src/ tests/
-
-# Type checking
-mypy src/
-
-# Linting
-flake8 src/ tests/
-```
-
-### Contributing Guidelines
-
-1. Fork the repository and create a feature branch
-2. Implement changes with comprehensive tests
-3. Ensure all existing tests pass
-4. Add documentation for new features
-5. Submit a pull request with clear description
-
-### Development Setup
-
-```bash
-# Development dependencies
-pip install -r requirements-dev.txt
-
-# Pre-commit hooks
-pre-commit install
-
-# Build documentation locally
-cd docs/ && make html
-```
-
-## 📋 Requirements
-
-### Core Dependencies
-
-```
-jax >= 0.4.0
-jaxlib >= 0.4.0
-numpy >= 1.21.0
-scipy >= 1.7.0
-optax >= 0.1.4
-```
-
-### Optional Dependencies
-
-```
-matplotlib >= 3.5.0      # Visualization
-jupyter >= 1.0.0         # Notebooks
-pytest >= 6.0.0          # Testing
-black >= 22.0.0          # Code formatting
-mypy >= 0.991            # Type checking
-```
-
-### System Requirements
-
-- **Memory**: 8GB+ RAM (16GB+ recommended for large models)
-- **Storage**: 2GB+ free space
-- **GPU**: Optional but recommended (CUDA 11.0+)
-- **OS**: Linux, macOS, Windows (WSL2)
-
-## 🌟 Advanced Features
-
-### Custom Operators
-
-- **Fused Operations**: Memory-efficient compound operations
-- **Custom Kernels**: Low-level GPU kernel implementations
-- **Sparse Operations**: Efficient sparse matrix computations
-
-### Memory Management
-
-- **Gradient Checkpointing**: Trade computation for memory
-- **Mixed Precision**: FP16/BF16 training support
-- **Memory Profiling**: Built-in memory usage analysis
-
-### Optimization Techniques
-
-- **Learning Rate Scheduling**: Adaptive and cyclic schedules
-- **Gradient Accumulation**: Simulate large batch training
-- **Quantization**: Model compression techniques
-
-## 🔗 Related Projects
-
-- [JAX](https://github.com/google/jax) - The underlying framework
-- [Flax](https://github.com/google/flax) - Neural network library for JAX
-- [Optax](https://github.com/deepmind/optax) - Gradient processing and optimization
-- [Haiku](https://github.com/deepmind/dm-haiku) - Neural network library
-
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## 🙏 Acknowledgments
-
-- **JAX Team** for the exceptional framework and documentation
-- **Scientific Computing Community** for algorithmic innovations
-- **Open Source Contributors** who make projects like this possible
-
-## 📞 Contact & Support
-
-- **GitHub Issues**: [Report bugs or request features](https://github.com/SatvikPraveen/JAX-NSL/issues)
-- **GitHub Discussions**: [Community discussion and questions](https://github.com/SatvikPraveen/JAX-NSL/discussions)
-- **Documentation**: [Comprehensive guides and API reference](https://satvikpraveen.github.io/JAX-NSL/)
-
----
-
-**JAX-NSL** is your comprehensive guide to mastering JAX—from syntactical fundamentals to research-grade implementations. Use it as a learning resource, reference guide, or study material for deepening your understanding of neural scientific computing.
+MIT. See [LICENSE](LICENSE).

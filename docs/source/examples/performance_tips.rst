@@ -1,117 +1,64 @@
-Performance Tips
+Performance tips
 ================
 
-Practical guidelines for writing fast JAX-NSL code.
+Find accidental recompilation
+-----------------------------
 
-.. contents::
-   :local:
-   :depth: 1
+.. code-block:: python
 
-Always JIT-compile Hot Loops
+   import jax.numpy as jnp
+   from jax_nsl.transforms import count_compilations
+
+   f = count_compilations(lambda x: x * 2)
+   f(jnp.ones(3)); f(jnp.ones(3)); f(jnp.ones(4))
+   print(f.compilation_count())     # 2: the new shape forced a retrace
+
+Inspect the compiled program
 ----------------------------
 
-Wrap every function that is called repeatedly inside a training loop with ``jax.jit``:
+.. code-block:: python
+
+   import jax.numpy as jnp
+   from jax_nsl.transforms import aot_compile, compile_info
+
+   compiled = aot_compile(lambda a, b: a @ b, jnp.ones((256, 256)), jnp.ones((256, 256)))
+   print(compile_info(compiled))    # flops, bytes accessed, temp/argument/output bytes
+
+Benchmark correctly
+-------------------
 
 .. code-block:: python
 
-   import jax
-   from jax_nsl.transforms.jit_utils import smart_jit
+   import jax, jax.numpy as jnp
+   from jax_nsl.utils import benchmark_function, compare_implementations, create_performance_report
 
-   @smart_jit
-   def train_step(state, batch):
-       ...
+   x = jnp.ones((512, 512))
+   results = compare_implementations({"eager": lambda x: x @ x, "jit": jax.jit(lambda x: x @ x)}, x, num_runs=10)
+   print(create_performance_report(results))   # both timings block on the result
 
-Avoid Python-Side Control Flow on Traced Values
-------------------------------------------------
-
-Python ``if``/``for`` applied to JAX arrays will re-trace on every call.
-Use ``jax.lax.cond``, ``jax.lax.switch``, or ``jax.lax.while_loop`` instead:
+Bound memory with chunked vmap and remat
+----------------------------------------
 
 .. code-block:: python
 
-   # BAD – triggers a re-trace each step
-   def step(x):
-       if x > 0:          # Python bool on JAX array
-           return x * 2
-       return -x
+   import jax, jax.numpy as jnp
+   from jax_nsl.transforms import chunked_vmap, scan_with_checkpointing
 
-   # GOOD – compiled once
-   import jax.lax as lax
-   def step(x):
-       return lax.cond(x > 0, lambda: x * 2, lambda: -x)
+   f = lambda x: jnp.sum(jnp.outer(x, x))          # a large intermediate per example
+   xs = jnp.ones((10_000, 256))
+   out = chunked_vmap(f, xs, chunk_size=500)      # lax.map over vmap-ed chunks
 
-Use scan for Sequential Computation
--------------------------------------
+   body = lambda h, x: (jnp.tanh(h + x), h)
+   carry, ys = scan_with_checkpointing(body, jnp.zeros(256), xs, checkpoint_every=100)
 
-``jax.lax.scan`` is significantly faster than Python loops:
+Mixed precision
+---------------
 
 .. code-block:: python
 
-   # Slow Python loop
-   carry = init
-   for x in sequence:
-       carry, out = f(carry, x)
+   import jax.numpy as jnp
+   from jax_nsl.models import create_mlp
+   from jax_nsl.training import with_mixed_precision
 
-   # Fast compiled scan
-   from jax_nsl.transforms.scan_utils import scan_sequence
-   carry, outs = scan_sequence(f, init, sequence)
-
-Numerically Stable Operations
-------------------------------
-
-Use the stable primitives in ``core.numerics`` to avoid NaNs:
-
-.. code-block:: python
-
-   from jax_nsl.core.numerics import stable_logsumexp, stable_softmax, safe_sqrt
-
-   # Stable log-sum-exp (avoids overflow for large logits)
-   log_probs = stable_logsumexp(logits)
-
-   # Safe sqrt (avoids NaN gradient at 0)
-   norms = safe_sqrt(jnp.sum(x**2, axis=-1), eps=1e-8)
-
-Profile Memory and Timing
---------------------------
-
-Use the profiling utilities before large runs:
-
-.. code-block:: python
-
-   from jax_nsl.utils.benchmarking import benchmark
-   from jax_nsl.transforms.jit_utils import benchmark_jit
-
-   # Per-call timing
-   mean_t, std_t = benchmark(fun, *args, n_runs=50)
-   print(f"{mean_t*1e3:.2f} ± {std_t*1e3:.2f} ms")
-
-   # Warmup vs steady-state
-   w_t, s_t = benchmark_jit(fun, *args)
-
-Gradient Clipping
------------------
-
-Clip gradients to prevent exploding gradients in deep networks:
-
-.. code-block:: python
-
-   from jax_nsl.training.optimizers import create_optimizer_with_clipping
-
-   # Or use Optax directly (recommended)
-   import optax
-   tx = optax.chain(
-       optax.clip_by_global_norm(1.0),
-       optax.adam(1e-3),
-   )
-
-Use ``float32`` by Default, ``bfloat16`` for Large Models
-----------------------------------------------------------
-
-.. code-block:: python
-
-   import jax
-   # Enable bfloat16 globally (TPUs and modern GPUs)
-   jax.config.update("jax_default_matmul_precision", "bfloat16")
-
-   # Or cast individual arrays
-   x_bf16 = x.astype(jnp.bfloat16)
+   params, forward, _ = create_mlp([8, 64, 2], seed=0)
+   fast_forward = with_mixed_precision(forward, jnp.bfloat16)    # f32 master params, bf16 compute

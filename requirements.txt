@@ -1,4 +1,4 @@
-# File location: jax-nsl/requirements.txt
+# Convenience pin list; pyproject.toml is the source of truth (pip install -e ".[dev,notebook]").
 
 # Core JAX ecosystem
 jax>=0.4.0
@@ -31,7 +31,6 @@ nbsphinx>=0.8.0
 # Utilities
 tqdm>=4.64.0
 rich>=12.0.0
-wandb>=0.13.0
 
 # Optional GPU support (uncomment if needed)
 # jaxlib[cuda11_pip]>=0.4.0  # For CUDA 11
