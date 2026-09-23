@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/SatvikPraveen/JAX-NSL/actions/workflows/ci.yml/badge.svg)](https://github.com/SatvikPraveen/JAX-NSL/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 
 A learning resource and reference library for JAX, from array semantics and
@@ -107,7 +107,7 @@ make notebooks     # execute every notebook with nbconvert
 pre-commit install # optional hooks (ruff, black, isort, nbstripout)
 ```
 
-CI runs lint, the test-suite on Python 3.10 to 3.12, and executes all
+CI runs lint, the test-suite on Python 3.11 to 3.13, and executes all
 notebooks. Deprecation warnings raised from `jax_nsl` fail the tests, so API
 drift in JAX shows up immediately.
 

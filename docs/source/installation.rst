@@ -4,8 +4,8 @@ Installation
 Requirements
 ------------
 
-* Python 3.10 or newer
-* JAX 0.4.30 or newer (the test-suite runs against current JAX; deprecated
+* Python 3.11 or newer
+* JAX 0.8.1 or newer (the test-suite runs against current JAX; deprecated
   APIs are treated as errors so drift is caught early)
 
 Install from source

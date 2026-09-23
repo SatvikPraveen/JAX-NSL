@@ -15,8 +15,8 @@ jobs:
     name: Lint & format
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
       - run: pip install ruff black isort
@@ -30,10 +30,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12"]
+        python-version: ["3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -49,7 +49,7 @@ jobs:
         run: pytest tests/ -q --cov=jax_nsl --cov-report=xml --cov-report=term
       - name: Upload coverage to Codecov
         if: matrix.python-version == '3.11'
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v5
         with:
           files: ./coverage.xml
           fail_ci_if_error: false
@@ -58,8 +58,8 @@ jobs:
     name: Execute notebooks
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
           cache: pip

@@ -9,7 +9,7 @@ description = "Neural Scientific Learning with JAX – educational framework for
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [{ name = "Satvik Praveen", email = "satvikpraveen707@gmail.com" }]
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Education",
@@ -17,14 +17,16 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Education",
 ]
 dependencies = [
-    "jax>=0.4.30",
+    # jax_nsl.parallel uses jax.set_mesh (0.7.1+) and jax.sharding.get_mesh (0.8.1+).
+    # JAX dropped Python 3.10 wheels in 0.7.0, hence requires-python >= 3.11.
+    "jax>=0.8.1",
     "flax>=0.7.0",
     "optax>=0.1.7",
     "numpy>=1.21.0",
@@ -72,7 +74,7 @@ where = ["src"]
 
 [tool.black]
 line-length = 100
-target-version = ["py310", "py311"]
+target-version = ["py311"]
 exclude = '''
 /(
     \.git
@@ -90,7 +92,7 @@ line_length = 100
 src_paths = ["src", "tests"]
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.11"
 warn_return_any = true
 warn_unused_configs = true
 ignore_missing_imports = true
@@ -98,7 +100,7 @@ exclude = ["venv/", ".venv/", "build/", "dist/"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py311"
 exclude = ["venv", ".venv", "build", "dist", "notebooks"]
 
 [tool.ruff.lint]
