@@ -1,423 +1,284 @@
 # File location: src/jax_nsl/utils/tree_utils.py
 
 """
-PyTree manipulation utilities.
+Pytree utilities built on :mod:`jax.tree_util`.
 
-This module provides advanced utilities for working with JAX PyTrees,
-including path-aware operations and tree analysis tools.
+A *pytree* is any nested structure of dicts/lists/tuples/NamedTuples (and
+registered classes) with arrays at the leaves.  JAX transformations map
+over leaves; these helpers cover the operations that come up around them:
+path-aware maps, whole-tree arithmetic, stacking/unstacking (for ``scan``
+and ``vmap``), and conversion to a flat ``{"a/b/c": array}`` dict for
+serialisation.
 """
+
+from __future__ import annotations
+
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 import jax
 import jax.numpy as jnp
 from jax import tree_util
-from typing import Any, Callable, Dict, List, Tuple, Optional, Union
-import functools
+
+Array = jax.Array
 
 
-def tree_flatten_with_path(tree: Any) -> Tuple[List[Tuple[Any, Any]], Any]:
-    """Flatten tree while preserving paths to each leaf.
-    
-    Args:
-        tree: PyTree to flatten
-        
-    Returns:
-        ([(path, leaf), ...], tree_def) tuple
-    """
-    leaves, tree_def = tree_util.tree_flatten(tree)
-    paths = tree_util.tree_flatten(tree_util.tree_map(lambda _: None, tree))[1]
-    
-    # Get paths using tree structure
-    def get_paths(tree_structure):
-        paths = []
-        
-        def collect_paths(subtree, current_path=[]):
-            if tree_util.tree_leaves(subtree):
-                if isinstance(subtree, dict):
-                    for key, value in subtree.items():
-                        collect_paths(value, current_path + [key])
-                elif isinstance(subtree, (list, tuple)):
-                    for i, value in enumerate(subtree):
-                        collect_paths(value, current_path + [i])
-                else:
-                    paths.append(tuple(current_path))
-            else:
-                paths.append(tuple(current_path))
-        
-        collect_paths(tree_structure)
-        return paths
-    
-    actual_paths = get_paths(tree)
-    return list(zip(actual_paths, leaves)), tree_def
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+
+def path_to_str(path: Tuple[Any, ...], sep: str = "/") -> str:
+    """Render a JAX key path as ``"layer1/W"`` (dict keys, sequence indices, attribute names)."""
+    parts = []
+    for entry in path:
+        if isinstance(entry, tree_util.DictKey):
+            parts.append(str(entry.key))
+        elif isinstance(entry, tree_util.SequenceKey):
+            parts.append(str(entry.idx))
+        elif isinstance(entry, tree_util.GetAttrKey):
+            parts.append(str(entry.name))
+        else:
+            parts.append(str(entry))
+    return sep.join(parts)
 
 
-def tree_unflatten_with_path(path_leaf_pairs: List[Tuple[Any, Any]], tree_def: Any) -> Any:
-    """Unflatten tree from path-leaf pairs.
-    
-    Args:
-        path_leaf_pairs: List of (path, leaf) pairs
-        tree_def: Tree definition from tree_flatten_with_path
-        
-    Returns:
-        Reconstructed tree
-    """
-    leaves = [leaf for _, leaf in path_leaf_pairs]
-    return tree_util.tree_unflatten(tree_def, leaves)
+def tree_flatten_with_path(tree: Any) -> Tuple[List[Tuple[Tuple[Any, ...], Any]], Any]:
+    """``([(key_path, leaf), ...], treedef)`` via :func:`jax.tree_util.tree_flatten_with_path`."""
+    return tree_util.tree_flatten_with_path(tree)
 
 
-def tree_reduce(tree: Any, 
-               reduce_fn: Callable,
-               initializer: Any = None) -> Any:
-    """Reduce all leaves in a tree to a single value.
-    
-    Args:
-        tree: PyTree to reduce
-        reduce_fn: Binary reduction function
-        initializer: Initial value for reduction
-        
-    Returns:
-        Reduced value
-    """
-    leaves = tree_util.tree_leaves(tree)
-    
-    if not leaves:
-        return initializer
-    
-    result = leaves[0] if initializer is None else initializer
-    start_idx = 1 if initializer is None else 0
-    
-    for leaf in leaves[start_idx:]:
-        result = reduce_fn(result, leaf)
-    
-    return result
+def tree_unflatten_with_path(path_leaf_pairs: Sequence[Tuple[Any, Any]], treedef: Any) -> Any:
+    """Inverse of :func:`tree_flatten_with_path`."""
+    return tree_util.tree_unflatten(treedef, [leaf for _, leaf in path_leaf_pairs])
 
 
-def tree_select(tree: Any, condition_fn: Callable) -> Any:
-    """Select subtrees based on condition function.
-    
-    Args:
-        tree: PyTree to filter
-        condition_fn: Function that returns True for leaves to keep
-        
-    Returns:
-        Filtered tree
-    """
-    def select_leaf(leaf):
-        return leaf if condition_fn(leaf) else None
-    
-    return tree_util.tree_map(select_leaf, tree)
+def tree_map_with_key(f: Callable, tree: Any, *rest: Any) -> Any:
+    """``f(key_path, leaf, *other_leaves)`` over the tree (alias of ``tree_map_with_path``)."""
+    return tree_util.tree_map_with_path(f, tree, *rest)
 
 
-def tree_update_at_path(tree: Any, path: Tuple, new_value: Any) -> Any:
-    """Update tree at specific path.
-    
-    Args:
-        tree: PyTree to update
-        path: Path to update (tuple of keys/indices)
-        new_value: New value to set
-        
-    Returns:
-        Updated tree
-    """
-    def update_recursive(current_tree, remaining_path):
-        if not remaining_path:
+def tree_paths(tree: Any, sep: str = "/") -> List[str]:
+    """String path of every leaf, in flatten order."""
+    return [path_to_str(p, sep) for p, _ in tree_util.tree_leaves_with_path(tree)]
+
+
+def tree_flatten_dict(tree: Any, sep: str = "/") -> Dict[str, Any]:
+    """``{"layer1/W": array, ...}`` - the layout most checkpoint formats want."""
+    return {path_to_str(p, sep): leaf for p, leaf in tree_util.tree_leaves_with_path(tree)}
+
+
+def tree_unflatten_dict(flat: Dict[str, Any], sep: str = "/") -> Dict[str, Any]:
+    """Inverse of :func:`tree_flatten_dict` (rebuilds nested dicts; list indices become dict keys)."""
+    out: Dict[str, Any] = {}
+    for key, value in flat.items():
+        node = out
+        parts = key.split(sep)
+        for part in parts[:-1]:
+            node = node.setdefault(part, {})
+        node[parts[-1]] = value
+    return out
+
+
+def tree_update_at_path(tree: Any, path: Sequence[Any], new_value: Any) -> Any:
+    """Functionally replace the subtree at ``path`` (keys/indices, or JAX key-path entries)."""
+    def key_of(entry):
+        if isinstance(entry, tree_util.DictKey):
+            return entry.key
+        if isinstance(entry, tree_util.SequenceKey):
+            return entry.idx
+        if isinstance(entry, tree_util.GetAttrKey):
+            return entry.name
+        return entry
+
+    def rec(node, remaining):
+        if not remaining:
             return new_value
-        
-        key = remaining_path[0]
-        rest_path = remaining_path[1:]
-        
-        if isinstance(current_tree, dict):
-            updated_subtree = update_recursive(current_tree[key], rest_path)
-            return {**current_tree, key: updated_subtree}
-        elif isinstance(current_tree, list):
-            new_list = list(current_tree)
-            new_list[key] = update_recursive(current_tree[key], rest_path)
-            return new_list
-        elif isinstance(current_tree, tuple):
-            new_tuple = list(current_tree)
-            new_tuple[key] = update_recursive(current_tree[key], rest_path)
-            return tuple(new_tuple)
-        else:
-            raise TypeError(f"Cannot index into type {type(current_tree)}")
-    
-    return update_recursive(tree, path)
+        key, rest = key_of(remaining[0]), remaining[1:]
+        if isinstance(node, dict):
+            return {**node, key: rec(node[key], rest)}
+        if isinstance(node, tuple) and hasattr(node, "_fields"):  # NamedTuple
+            return node._replace(**{key: rec(getattr(node, key), rest)})
+        if isinstance(node, (list, tuple)):
+            items = list(node)
+            items[key] = rec(node[key], rest)
+            return type(node)(items)
+        raise TypeError(f"Cannot index into {type(node).__name__}")
+
+    return rec(tree, list(path))
 
 
-def tree_diff(tree1: Any, tree2: Any, tolerance: float = 1e-8) -> Dict[str, Any]:
-    """Compare two trees and return differences.
-    
-    Args:
-        tree1: First tree
-        tree2: Second tree
-        tolerance: Numerical tolerance for comparison
-        
-    Returns:
-        Dictionary containing difference information
+# ---------------------------------------------------------------------------
+# Reductions and arithmetic
+# ---------------------------------------------------------------------------
+
+def tree_reduce(tree: Any, reduce_fn: Callable, initializer: Any = None) -> Any:
+    """Fold ``reduce_fn`` over the leaves (``jax.tree_util.tree_reduce``)."""
+    if initializer is None:
+        return tree_util.tree_reduce(reduce_fn, tree)
+    return tree_util.tree_reduce(reduce_fn, tree, initializer)
+
+
+def tree_norm(tree: Any) -> Array:
+    """Global L2 norm over all leaves."""
+    return jnp.sqrt(sum(jnp.sum(jnp.square(leaf)) for leaf in tree_util.tree_leaves(tree)))
+
+
+def tree_dot(a: Any, b: Any) -> Array:
+    """Inner product ``sum_i <a_i, b_i>`` over matching leaves."""
+    return sum(jnp.vdot(x, y) for x, y in zip(tree_util.tree_leaves(a), tree_util.tree_leaves(b)))
+
+
+def tree_add(a: Any, b: Any) -> Any:
+    """Leaf-wise ``a + b``."""
+    return tree_util.tree_map(jnp.add, a, b)
+
+
+def tree_sub(a: Any, b: Any) -> Any:
+    """Leaf-wise ``a - b``."""
+    return tree_util.tree_map(jnp.subtract, a, b)
+
+
+def tree_scale(tree: Any, scalar: Union[float, Array]) -> Any:
+    """Leaf-wise ``scalar * leaf``."""
+    return tree_util.tree_map(lambda x: scalar * x, tree)
+
+
+def tree_zeros_like(tree: Any) -> Any:
+    """Zeros with the structure/shapes/dtypes of ``tree``."""
+    return tree_util.tree_map(jnp.zeros_like, tree)
+
+
+def tree_random_like(key: Array, tree: Any, sampler: Callable = jax.random.normal) -> Any:
+    """Independent random leaves (one split key per leaf) shaped like ``tree``."""
+    leaves, treedef = tree_util.tree_flatten(tree)
+    keys = jax.random.split(key, len(leaves))
+    return treedef.unflatten([sampler(k, leaf.shape, leaf.dtype) for k, leaf in zip(keys, leaves)])
+
+
+def tree_cast(tree: Any, dtype: Any) -> Any:
+    """Cast floating leaves to ``dtype``; leave integer/bool leaves alone."""
+    return tree_util.tree_map(
+        lambda x: x.astype(dtype) if jnp.issubdtype(x.dtype, jnp.floating) else x, tree)
+
+
+def tree_select(tree: Any, condition_fn: Callable[[Any], bool]) -> Any:
+    """Keep leaves for which ``condition_fn(leaf)`` is true; others become ``None``.
+
+    ``None`` is an empty subtree in JAX, so the result can still be mapped
+    over - useful for e.g. applying weight decay only to matrices.
     """
-    path_leaf_pairs1, treedef1 = tree_flatten_with_path(tree1)
-    path_leaf_pairs2, treedef2 = tree_flatten_with_path(tree2)
-    
-    # Check structure differences
-    if treedef1 != treedef2:
-        return {'structure_differs': True, 'tree1_structure': treedef1, 'tree2_structure': treedef2}
-    
-    # Check value differences
-    differences = []
-    max_diff = 0.0
-    
-    for (path1, leaf1), (path2, leaf2) in zip(path_leaf_pairs1, path_leaf_pairs2):
-        if path1 != path2:
-            differences.append({'path': path1, 'error': 'Path mismatch'})
-            continue
-        
-        try:
-            if hasattr(leaf1, 'shape') and hasattr(leaf2, 'shape'):
-                # Array comparison
-                diff = jnp.abs(leaf1 - leaf2)
-                max_leaf_diff = float(jnp.max(diff))
-                mean_diff = float(jnp.mean(diff))
-                
-                if max_leaf_diff > tolerance:
-                    differences.append({
-                        'path': path1,
-                        'max_diff': max_leaf_diff,
-                        'mean_diff': mean_diff,
-                        'shape1': leaf1.shape,
-                        'shape2': leaf2.shape
-                    })
-                
-                max_diff = max(max_diff, max_leaf_diff)
-            else:
-                # Non-array comparison
-                if leaf1 != leaf2:
-                    differences.append({
-                        'path': path1,
-                        'value1': leaf1,
-                        'value2': leaf2
-                    })
-        except Exception as e:
-            differences.append({
-                'path': path1,
-                'error': f'Comparison failed: {e}'
-            })
-    
-    return {
-        'structure_differs': False,
-        'num_differences': len(differences),
-        'max_difference': max_diff,
-        'differences': differences,
-        'trees_equal': len(differences) == 0 and max_diff <= tolerance
-    }
+    return tree_util.tree_map(lambda leaf: leaf if condition_fn(leaf) else None, tree)
 
 
-def tree_statistics(tree: Any) -> Dict[str, Any]:
-    """Compute statistics about a PyTree.
-    
-    Args:
-        tree: PyTree to analyze
-        
-    Returns:
-        Dictionary of tree statistics
-    """
-    leaves = tree_util.tree_leaves(tree)
-    
-    if not leaves:
-        return {'empty': True}
-    
-    # Basic counts
-    num_leaves = len(leaves)
-    num_arrays = sum(1 for leaf in leaves if hasattr(leaf, 'shape'))
-    num_scalars = num_leaves - num_arrays
-    
-    # Array statistics
-    if num_arrays > 0:
-        array_leaves = [leaf for leaf in leaves if hasattr(leaf, 'shape')]
-        total_elements = sum(leaf.size for leaf in array_leaves)
-        total_bytes = sum(leaf.nbytes for leaf in array_leaves)
-        
-        shapes = [leaf.shape for leaf in array_leaves]
-        dtypes = [leaf.dtype for leaf in array_leaves]
-        ndims = [leaf.ndim for leaf in array_leaves]
-        
-        array_stats = {
-            'total_elements': total_elements,
-            'total_bytes': total_bytes,
-            'total_mb': total_bytes / (1024 * 1024),
-            'shapes': shapes,
-            'unique_dtypes': list(set(str(dt) for dt in dtypes)),
-            'min_ndim': min(ndims),
-            'max_ndim': max(ndims),
-            'mean_ndim': sum(ndims) / len(ndims)
-        }
-    else:
-        array_stats = {}
-    
-    # Tree structure analysis
-    path_leaf_pairs, tree_def = tree_flatten_with_path(tree)
-    max_depth = max(len(path) for path, _ in path_leaf_pairs) if path_leaf_pairs else 0
-    
-    return {
-        'empty': False,
-        'num_leaves': num_leaves,
-        'num_arrays': num_arrays,
-        'num_scalars': num_scalars,
-        'max_depth': max_depth,
-        'tree_structure': tree_def,
-        'array_statistics': array_stats
-    }
-
-
-def tree_map_with_key(f: Callable, tree: Any, *rest_trees) -> Any:
-    """Map function with access to the key/path of each element.
-    
-    Args:
-        f: Function that takes (key_path, leaf, *rest_leaves)
-        tree: Primary tree
-        *rest_trees: Additional trees to map over
-        
-    Returns:
-        Mapped tree
-    """
-    def map_fn(key_path, *leaves):
-        return f(key_path, *leaves)
-    
-    return tree_util.tree_map_with_path(map_fn, tree, *rest_trees)
-
-
-def tree_apply_mask(tree: Any, mask_tree: Any, default_value: Any = None) -> Any:
-    """Apply boolean mask to tree leaves.
-    
-    Args:
-        tree: Tree to mask
-        mask_tree: Boolean mask tree (same structure)
-        default_value: Value to use where mask is False
-        
-    Returns:
-        Masked tree
-    """
-    def apply_mask(leaf, mask):
-        if hasattr(leaf, 'shape') and hasattr(mask, 'shape'):
+def tree_apply_mask(tree: Any, mask_tree: Any, default_value: Any = 0.0) -> Any:
+    """``where(mask, leaf, default)`` leaf-wise (mask leaves may be arrays or bools)."""
+    def apply(leaf, mask):
+        if hasattr(mask, "shape") and mask.shape != ():
             return jnp.where(mask, leaf, default_value)
-        elif mask:
-            return leaf
-        else:
-            return default_value
-    
-    return tree_util.tree_map(apply_mask, tree, mask_tree)
+        return leaf if bool(mask) else jnp.full_like(leaf, default_value)
+
+    return tree_util.tree_map(apply, tree, mask_tree)
 
 
-def tree_stack(trees: List[Any], axis: int = 0) -> Any:
-    """Stack multiple trees along new axis.
-    
-    Args:
-        trees: List of trees with same structure
-        axis: Axis to stack along
-        
-    Returns:
-        Stacked tree
-    """
+# ---------------------------------------------------------------------------
+# Stacking (for scan / vmap over lists of trees)
+# ---------------------------------------------------------------------------
+
+def tree_stack(trees: Sequence[Any], axis: int = 0) -> Any:
+    """Stack a list of identically structured trees along a new axis."""
     if not trees:
-        raise ValueError("Cannot stack empty list of trees")
-    
-    def stack_leaves(*leaves):
-        return jnp.stack(leaves, axis=axis)
-    
-    return tree_util.tree_map(stack_leaves, *trees)
+        raise ValueError("Cannot stack an empty list of trees")
+    return tree_util.tree_map(lambda *leaves: jnp.stack(leaves, axis=axis), *trees)
 
 
 def tree_unstack(tree: Any, axis: int = 0) -> List[Any]:
-    """Unstack tree along specified axis.
-    
-    Args:
-        tree: Tree to unstack
-        axis: Axis to unstack along
-        
-    Returns:
-        List of unstacked trees
-    """
-    # Get size of axis to unstack
-    first_leaf = tree_util.tree_leaves(tree)[0]
-    if not hasattr(first_leaf, 'shape'):
-        raise ValueError("Cannot unstack tree with non-array leaves")
-    
-    axis_size = first_leaf.shape[axis]
-    
-    def unstack_leaf(leaf):
-        return [jnp.take(leaf, i, axis=axis) for i in range(axis_size)]
-    
-    unstacked_leaves_list = tree_util.tree_map(unstack_leaf, tree)
-    
-    # Reorganize to list of trees
-    result_trees = []
-    for i in range(axis_size):
-        tree_i = tree_util.tree_map(lambda leaves_list: leaves_list[i], unstacked_leaves_list)
-        result_trees.append(tree_i)
-    
-    return result_trees
+    """Inverse of :func:`tree_stack`."""
+    leaves, treedef = tree_util.tree_flatten(tree)
+    n = leaves[0].shape[axis]
+    return [treedef.unflatten([jnp.take(leaf, i, axis=axis) for leaf in leaves]) for i in range(n)]
 
 
-def tree_take(tree: Any, indices: jnp.ndarray, axis: int = 0) -> Any:
-    """Take elements from tree along specified axis.
-    
-    Args:
-        tree: Tree to index
-        indices: Indices to take
-        axis: Axis to take along
-        
-    Returns:
-        Tree with selected elements
-    """
-    def take_leaf(leaf):
-        if hasattr(leaf, 'shape'):
-            return jnp.take(leaf, indices, axis=axis)
-        else:
-            return leaf
-    
-    return tree_util.tree_map(take_leaf, tree)
-
-
-def tree_concatenate(trees: List[Any], axis: int = 0) -> Any:
-    """Concatenate trees along specified axis.
-    
-    Args:
-        trees: List of trees to concatenate
-        axis: Axis to concatenate along
-        
-    Returns:
-        Concatenated tree
-    """
+def tree_concatenate(trees: Sequence[Any], axis: int = 0) -> Any:
+    """Concatenate leaves along an existing axis."""
     if not trees:
-        raise ValueError("Cannot concatenate empty list of trees")
-    
-    def concat_leaves(*leaves):
-        array_leaves = [leaf for leaf in leaves if hasattr(leaf, 'shape')]
-        if array_leaves:
-            return jnp.concatenate(array_leaves, axis=axis)
-        else:
-            return leaves[0]  # Return first non-array leaf
-    
-    return tree_util.tree_map(concat_leaves, *trees)
+        raise ValueError("Cannot concatenate an empty list of trees")
+    return tree_util.tree_map(lambda *leaves: jnp.concatenate(leaves, axis=axis), *trees)
+
+
+def tree_take(tree: Any, indices: Any, axis: int = 0) -> Any:
+    """``jnp.take`` on every leaf."""
+    return tree_util.tree_map(lambda leaf: jnp.take(leaf, indices, axis=axis), tree)
 
 
 def tree_slice(tree: Any, slice_obj: Union[slice, Tuple[slice, ...]], axis: int = 0) -> Any:
-    """Slice tree along specified axis.
-    
-    Args:
-        tree: Tree to slice
-        slice_obj: Slice object or tuple of slices
-        axis: Primary axis for slicing (if slice_obj is just a slice)
-        
-    Returns:
-        Sliced tree
-    """
-    def slice_leaf(leaf):
-        if hasattr(leaf, 'shape'):
-            if isinstance(slice_obj, slice):
-                slices = [slice(None)] * leaf.ndim
-                slices[axis] = slice_obj
-                return leaf[tuple(slices)]
-            else:
-                return leaf[slice_obj]
-        else:
-            return leaf
-    
-    return tree_util.tree_map(slice_leaf, tree)
+    """Slice every leaf along ``axis`` (or with a full index tuple)."""
+    def do(leaf):
+        if isinstance(slice_obj, slice):
+            idx = [slice(None)] * leaf.ndim
+            idx[axis] = slice_obj
+            return leaf[tuple(idx)]
+        return leaf[slice_obj]
+
+    return tree_util.tree_map(do, tree)
+
+
+# ---------------------------------------------------------------------------
+# Inspection
+# ---------------------------------------------------------------------------
+
+def tree_diff(tree1: Any, tree2: Any, tolerance: float = 1e-8) -> Dict[str, Any]:
+    """Compare two trees: structure, then per-leaf max/mean absolute difference."""
+    pairs1, def1 = tree_flatten_with_path(tree1)
+    pairs2, def2 = tree_flatten_with_path(tree2)
+    if def1 != def2:
+        return {"structure_differs": True, "tree1_structure": def1, "tree2_structure": def2}
+
+    differences = []
+    max_diff = 0.0
+    for (path, a), (_, b) in zip(pairs1, pairs2):
+        name = path_to_str(path)
+        if hasattr(a, "shape") and hasattr(b, "shape"):
+            if a.shape != b.shape:
+                differences.append({"path": name, "error": f"shape {a.shape} vs {b.shape}"})
+                continue
+            d = jnp.abs(jnp.asarray(a, jnp.float32) - jnp.asarray(b, jnp.float32))
+            leaf_max = float(jnp.max(d)) if d.size else 0.0
+            max_diff = max(max_diff, leaf_max)
+            if leaf_max > tolerance:
+                differences.append({"path": name, "max_diff": leaf_max, "mean_diff": float(jnp.mean(d))})
+        elif a != b:
+            differences.append({"path": name, "value1": a, "value2": b})
+    return {"structure_differs": False, "num_differences": len(differences), "max_difference": max_diff,
+            "differences": differences, "trees_equal": not differences}
+
+
+def tree_statistics(tree: Any) -> Dict[str, Any]:
+    """Leaf counts, element/byte totals, dtypes, depth."""
+    pairs, treedef = tree_flatten_with_path(tree)
+    if not pairs:
+        return {"empty": True}
+    arrays = [leaf for _, leaf in pairs if hasattr(leaf, "shape")]
+    stats: Dict[str, Any] = {
+        "empty": False,
+        "num_leaves": len(pairs),
+        "num_arrays": len(arrays),
+        "num_scalars": len(pairs) - len(arrays),
+        "max_depth": max(len(p) for p, _ in pairs),
+        "tree_structure": treedef,
+    }
+    if arrays:
+        total_bytes = sum(a.nbytes for a in arrays)
+        stats["array_statistics"] = {
+            "total_elements": int(sum(a.size for a in arrays)),
+            "total_bytes": int(total_bytes),
+            "total_mb": total_bytes / (1024 * 1024),
+            "shapes": [a.shape for a in arrays],
+            "unique_dtypes": sorted({str(a.dtype) for a in arrays}),
+            "min_ndim": min(a.ndim for a in arrays),
+            "max_ndim": max(a.ndim for a in arrays),
+        }
+    return stats
+
+
+def tree_shapes(tree: Any) -> Any:
+    """Same structure with each leaf replaced by ``(shape, dtype)`` - a quick printable summary."""
+    return tree_util.tree_map(lambda x: (tuple(x.shape), str(x.dtype)), tree)

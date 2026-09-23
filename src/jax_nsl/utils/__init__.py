@@ -1,30 +1,66 @@
 # File location: src/jax_nsl/utils/__init__.py
 
 """
-Utility functions for benchmarking and pytree operations.
-
-This module provides helper utilities for performance measurement,
-pytree manipulation, and other common operations.
+Utilities: pytree manipulation and benchmarking.
 """
 
-from .benchmarking import *
-from .tree_utils import *
+from .benchmarking import (
+    PerformanceProfiler,
+    auto_benchmark,
+    benchmark_function,
+    benchmark_gradient_computation,
+    benchmark_vmap_scaling,
+    compare_implementations,
+    count_flops,
+    create_performance_report,
+    device_memory_stats,
+    live_array_bytes,
+    measure_throughput,
+    profile_memory_usage,
+    time_jit_compilation,
+    warmup_function,
+)
+from .tree_utils import (
+    path_to_str,
+    tree_add,
+    tree_apply_mask,
+    tree_cast,
+    tree_concatenate,
+    tree_diff,
+    tree_dot,
+    tree_flatten_dict,
+    tree_flatten_with_path,
+    tree_map_with_key,
+    tree_norm,
+    tree_paths,
+    tree_random_like,
+    tree_reduce,
+    tree_scale,
+    tree_select,
+    tree_shapes,
+    tree_slice,
+    tree_stack,
+    tree_statistics,
+    tree_sub,
+    tree_take,
+    tree_unflatten_dict,
+    tree_unflatten_with_path,
+    tree_unstack,
+    tree_update_at_path,
+    tree_zeros_like,
+)
 
 __all__ = [
     # benchmarking.py
-    "benchmark_function",
-    "time_jit_compilation", 
-    "measure_throughput",
-    "profile_memory_usage",
-    "compare_implementations",
-    "warmup_function",
-    
+    "benchmark_function", "time_jit_compilation", "measure_throughput", "profile_memory_usage",
+    "device_memory_stats", "live_array_bytes", "count_flops", "compare_implementations",
+    "warmup_function", "benchmark_gradient_computation", "benchmark_vmap_scaling",
+    "auto_benchmark", "create_performance_report", "PerformanceProfiler",
     # tree_utils.py
-    "tree_flatten_with_path",
-    "tree_unflatten_with_path",
-    "tree_reduce",
-    "tree_select",
-    "tree_update_at_path",
-    "tree_diff",
-    "tree_statistics"
+    "path_to_str", "tree_flatten_with_path", "tree_unflatten_with_path", "tree_map_with_key",
+    "tree_paths", "tree_flatten_dict", "tree_unflatten_dict", "tree_update_at_path", "tree_reduce",
+    "tree_norm", "tree_dot", "tree_add", "tree_sub", "tree_scale", "tree_zeros_like",
+    "tree_random_like", "tree_cast", "tree_select", "tree_apply_mask", "tree_stack",
+    "tree_unstack", "tree_concatenate", "tree_take", "tree_slice", "tree_diff",
+    "tree_statistics", "tree_shapes",
 ]
