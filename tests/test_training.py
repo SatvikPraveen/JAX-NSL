@@ -6,15 +6,15 @@ import jax.numpy as jnp
 import pytest
 from jax import random, grad
 
-from training.losses import (
+from jax_nsl.training.losses import (
     cross_entropy_loss, binary_cross_entropy, mse_loss,
     huber_loss, focal_loss, kl_divergence,
 )
-from training.optimizers import (
+from jax_nsl.training.optimizers import (
     sgd_optimizer, adam_optimizer, adamw_optimizer,
     clip_grads_by_global_norm, create_learning_rate_schedule,
 )
-from training.train_loop import (
+from jax_nsl.training.train_loop import (
     TrainState, create_train_state,
 )
 

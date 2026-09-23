@@ -4,9 +4,9 @@ import jax
 import jax.numpy as jnp
 import pytest
 from jax import grad, jacobian, hessian, jvp, vjp
-from src.autodiff.grad_jac_hess import compute_gradient, compute_jacobian, compute_hessian
-from src.autodiff.custom_vjp import custom_sqrt_vjp, smooth_abs_vjp
-from src.autodiff.custom_jvp import custom_sqrt_jvp, smooth_abs_jvp
+from jax_nsl.autodiff.grad_jac_hess import compute_gradient, compute_jacobian, compute_hessian
+from jax_nsl.autodiff.custom_vjp import custom_sqrt_vjp, smooth_abs_vjp
+from jax_nsl.autodiff.custom_jvp import custom_sqrt_jvp, smooth_abs_jvp
 
 
 class TestGradJacHess:

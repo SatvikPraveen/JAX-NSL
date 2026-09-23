@@ -16,7 +16,7 @@ Register a custom backward pass using ``@jax.custom_vjp``:
 
    import jax
    import jax.numpy as jnp
-   from autodiff.custom_vjp import smooth_abs_vjp
+   from jax_nsl.autodiff.custom_vjp import smooth_abs_vjp
 
    x = jnp.array([-2.0, 0.0, 3.0])
    y = smooth_abs_vjp(x)        # ≈ |x| but smooth around 0
@@ -31,7 +31,7 @@ Compute individual-sample gradients without slow looping:
 .. code-block:: python
 
    import jax
-   from transforms.vmap_utils import batch_gradient
+   from jax_nsl.transforms.vmap_utils import batch_gradient
 
    def loss_per_sample(params, x, y):
        pred = params["w"] @ x + params["b"]
@@ -53,7 +53,7 @@ Efficient sequential computation with ``lax.scan``:
 
 .. code-block:: python
 
-   from transforms.scan_utils import scan_sequence
+   from jax_nsl.transforms.scan_utils import scan_sequence
    import jax.numpy as jnp
 
    def rnn_step(h, x):
@@ -71,7 +71,7 @@ Replicate a training step across all available devices:
 .. code-block:: python
 
    import jax
-   from parallel.pmap_utils import replicate, unreplicate, pmapped_train_step
+   from jax_nsl.parallel.pmap_utils import replicate, unreplicate, pmapped_train_step
 
    state = create_train_state(model, rng, lr=1e-3, input_shape=(1, 784))
    state = replicate(state)
@@ -91,7 +91,7 @@ Benchmarking JIT Compilation
 
 .. code-block:: python
 
-   from transforms.jit_utils import benchmark_jit
+   from jax_nsl.transforms.jit_utils import benchmark_jit
    import jax.numpy as jnp
 
    def matmul(A, B):

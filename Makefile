@@ -27,7 +27,7 @@ test:
 
 ## test-cov     Run tests with coverage report
 test-cov:
-	$(PYTEST) $(TESTS) --cov=$(SRC) --cov-report=term-missing --cov-report=html
+	$(PYTEST) $(TESTS) --cov=jax_nsl --cov-report=term-missing --cov-report=html
 
 ## test-fast    Run tests, skip slow/gpu markers
 test-fast:

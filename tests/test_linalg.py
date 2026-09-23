@@ -6,12 +6,12 @@ import jax.numpy as jnp
 import pytest
 from jax import random
 
-from linalg.ops import (
+from jax_nsl.linalg.ops import (
     safe_matmul, batched_matmul, stable_svd, stable_eigh,
     qr_decomposition, cholesky_safe, frobenius_norm,
     spectral_norm, condition_number,
 )
-from linalg.solvers import (
+from jax_nsl.linalg.solvers import (
     conjugate_gradient, gradient_descent, eigenvalue_power_method,
 )
 

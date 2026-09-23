@@ -62,7 +62,7 @@ training.train_loop
 
 .. code-block:: python
 
-   from training.train_loop import create_train_state, train_step
+   from jax_nsl.training.train_loop import create_train_state, train_step
 
    state = create_train_state(model, rng, learning_rate=1e-3, input_shape=(1, 784))
 

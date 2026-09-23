@@ -6,11 +6,11 @@ import jax.numpy as jnp
 import pytest
 from jax import random, grad
 
-from models.mlp import (
+from jax_nsl.models.mlp import (
     init_mlp_params, mlp_forward, mlp_predict, activation_fn, create_mlp
 )
-from models.cnn import init_conv_params, conv2d_layer, pooling_layer
-from models.transformer import (
+from jax_nsl.models.cnn import init_conv_params, conv2d_layer, pooling_layer
+from jax_nsl.models.transformer import (
     init_attention_params, scaled_dot_product_attention,
     multi_head_attention, layer_norm, feed_forward_network,
 )

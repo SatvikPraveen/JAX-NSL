@@ -24,7 +24,7 @@ Arrays and PRNG
 
    import jax
    import jax.numpy as jnp
-   from core.prng import PRNGSequence
+   from jax_nsl.core.prng import PRNGSequence
 
    # Reproducible PRNG sequences
    seq = PRNGSequence(seed=42)
@@ -40,8 +40,8 @@ Training a Simple MLP
 
    import jax
    import jax.numpy as jnp
-   from models.mlp import MLP, create_mlp
-   from training.train_loop import create_train_state
+   from jax_nsl.models.mlp import MLP, create_mlp
+   from jax_nsl.training.train_loop import create_train_state
 
    rng = jax.random.PRNGKey(0)
    mlp = MLP(features=[64, 32, 10], activation="relu")
@@ -59,7 +59,7 @@ Gradients
 
 .. code-block:: python
 
-   from autodiff.grad_jac_hess import compute_gradient
+   from jax_nsl.autodiff.grad_jac_hess import compute_gradient
 
    loss = lambda w: jnp.sum((w - 1.0) ** 2)
    grad = compute_gradient(loss, jnp.zeros(4))

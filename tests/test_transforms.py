@@ -4,10 +4,10 @@ import jax
 import jax.numpy as jnp
 import pytest
 from jax import jit, vmap, grad, random
-from src.transforms.jit_utils import jit_with_static, efficient_jit, benchmark_jit
-from src.transforms.vmap_utils import batched_matmul, batched_gradient, parallel_apply
-from src.transforms.scan_utils import cumulative_sum, rnn_scan, solve_ode
-from src.transforms.control_flow import safe_divide, clip_gradient, stable_softmax
+from jax_nsl.transforms.jit_utils import jit_with_static, efficient_jit, benchmark_jit
+from jax_nsl.transforms.vmap_utils import batched_matmul, batched_gradient, parallel_apply
+from jax_nsl.transforms.scan_utils import cumulative_sum, rnn_scan, solve_ode
+from jax_nsl.transforms.control_flow import safe_divide, clip_gradient, stable_softmax
 
 
 class TestJitUtils:

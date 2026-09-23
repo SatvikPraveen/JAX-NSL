@@ -15,7 +15,7 @@ Wrap every function that is called repeatedly inside a training loop with ``jax.
 .. code-block:: python
 
    import jax
-   from transforms.jit_utils import smart_jit
+   from jax_nsl.transforms.jit_utils import smart_jit
 
    @smart_jit
    def train_step(state, batch):
@@ -53,7 +53,7 @@ Use scan for Sequential Computation
        carry, out = f(carry, x)
 
    # Fast compiled scan
-   from transforms.scan_utils import scan_sequence
+   from jax_nsl.transforms.scan_utils import scan_sequence
    carry, outs = scan_sequence(f, init, sequence)
 
 Numerically Stable Operations
@@ -63,7 +63,7 @@ Use the stable primitives in ``core.numerics`` to avoid NaNs:
 
 .. code-block:: python
 
-   from core.numerics import stable_logsumexp, stable_softmax, safe_sqrt
+   from jax_nsl.core.numerics import stable_logsumexp, stable_softmax, safe_sqrt
 
    # Stable log-sum-exp (avoids overflow for large logits)
    log_probs = stable_logsumexp(logits)
@@ -78,8 +78,8 @@ Use the profiling utilities before large runs:
 
 .. code-block:: python
 
-   from utils.benchmarking import benchmark
-   from transforms.jit_utils import benchmark_jit
+   from jax_nsl.utils.benchmarking import benchmark
+   from jax_nsl.transforms.jit_utils import benchmark_jit
 
    # Per-call timing
    mean_t, std_t = benchmark(fun, *args, n_runs=50)
@@ -95,7 +95,7 @@ Clip gradients to prevent exploding gradients in deep networks:
 
 .. code-block:: python
 
-   from training.optimizers import create_optimizer_with_clipping
+   from jax_nsl.training.optimizers import create_optimizer_with_clipping
 
    # Or use Optax directly (recommended)
    import optax

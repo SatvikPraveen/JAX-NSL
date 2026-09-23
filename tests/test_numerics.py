@@ -6,12 +6,12 @@ import pytest
 from jax import random, grad
 import numpy as np
 
-from src.core.numerics import (
+from jax_nsl.core.numerics import (
     stable_logsumexp, safe_log, safe_sqrt, safe_divide,
     clip_gradients, stable_softmax, numerical_gradient
 )
-from src.core.arrays import safe_cast, check_finite, tree_size
-from src.linalg.solvers import conjugate_gradient, gradient_descent
+from jax_nsl.core.arrays import safe_cast, check_finite, tree_size
+from jax_nsl.linalg.solvers import conjugate_gradient, gradient_descent
 
 
 class TestStableOperations:

@@ -5,7 +5,6 @@
 import jax.numpy as jnp
 import jax.random as jr
 import numpy as np
-import pandas as pd
 from pathlib import Path
 
 def generate_regression_data(key, n_samples=1000, n_features=10, noise_level=0.1):
@@ -77,10 +76,10 @@ def save_datasets():
              X=X_reg, y=y_reg, true_coef=coef_reg)
     
     # Save as CSV too
-    reg_df = pd.DataFrame(np.array(X_reg), 
-                         columns=[f'feature_{i}' for i in range(X_reg.shape[1])])
-    reg_df['target'] = np.array(y_reg)
-    reg_df.to_csv(data_dir / 'regression_data.csv', index=False)
+    reg_header = ','.join([f'feature_{i}' for i in range(X_reg.shape[1])] + ['target'])
+    np.savetxt(data_dir / 'regression_data.csv',
+               np.column_stack([np.array(X_reg), np.array(y_reg)]),
+               delimiter=',', header=reg_header, comments='')
     
     # Classification data
     key, subkey = jr.split(key)
@@ -95,9 +94,9 @@ def save_datasets():
              series=ts_data, ar_coef=ar_coef)
     
     # Save time series as CSV
-    ts_df = pd.DataFrame(np.array(ts_data), 
-                        columns=[f'series_{i}' for i in range(ts_data.shape[1])])
-    ts_df.to_csv(data_dir / 'timeseries_data.csv', index=False)
+    ts_header = ','.join(f'series_{i}' for i in range(ts_data.shape[1]))
+    np.savetxt(data_dir / 'timeseries_data.csv', np.array(ts_data),
+               delimiter=',', header=ts_header, comments='')
     
     print("Synthetic datasets generated successfully!")
 

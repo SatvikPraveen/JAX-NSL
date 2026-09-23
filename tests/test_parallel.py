@@ -8,9 +8,9 @@ from jax.sharding import PartitionSpec, Mesh
 from jax.experimental import mesh_utils
 import numpy as np
 
-from src.parallel.pmap_utils import data_parallel_step, sync_gradients, replicate_params
-from src.parallel.pjit_utils import create_mesh, shard_array, partition_params
-from src.parallel.collectives import all_reduce_mean, distributed_dot, sync_batch_stats
+from jax_nsl.parallel.pmap_utils import data_parallel_step, sync_gradients, replicate_params
+from jax_nsl.parallel.pjit_utils import create_mesh, shard_array, partition_params
+from jax_nsl.parallel.collectives import all_reduce_mean, distributed_dot, sync_batch_stats
 
 
 class TestPmapUtils:

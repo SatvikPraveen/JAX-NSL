@@ -23,7 +23,7 @@ Multi-layer perceptron.
 
    import jax
    import jax.numpy as jnp
-   from models.mlp import MLP, create_mlp
+   from jax_nsl.models.mlp import MLP, create_mlp
 
    key = jax.random.PRNGKey(0)
    mlp = MLP(features=[128, 64, 10], activation="relu")
@@ -46,7 +46,7 @@ Convolutional neural network.
 
 .. code-block:: python
 
-   from models.cnn import CNN
+   from jax_nsl.models.cnn import CNN
 
    model = CNN(features=[32, 64], num_classes=10)
    x = jnp.ones((1, 28, 28, 1))   # NHWC format

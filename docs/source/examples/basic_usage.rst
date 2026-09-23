@@ -15,7 +15,7 @@ Linear Regression
    import jax
    import jax.numpy as jnp
    from jax import grad, jit
-   from core.prng import PRNGSequence
+   from jax_nsl.core.prng import PRNGSequence
 
    # ── Data ──────────────────────────────────────────────────────────────────
    seq = PRNGSequence(0)
@@ -51,9 +51,9 @@ MLP for MNIST-like Classification
    import jax
    import jax.numpy as jnp
    import optax
-   from models.mlp import create_mlp
-   from training.losses import cross_entropy_loss
-   from training.train_loop import create_train_state, train_step
+   from jax_nsl.models.mlp import create_mlp
+   from jax_nsl.training.losses import cross_entropy_loss
+   from jax_nsl.training.train_loop import create_train_state, train_step
 
    rng = jax.random.PRNGKey(42)
    model = create_mlp(features=[256, 128, 10])
@@ -75,7 +75,7 @@ Gradient Checking
 
 .. code-block:: python
 
-   from autodiff.grad_jac_hess import compute_gradient, gradient_checker
+   from jax_nsl.autodiff.grad_jac_hess import compute_gradient, gradient_checker
    import jax.numpy as jnp
 
    fun = lambda x: jnp.sum(jnp.sin(x) ** 2)

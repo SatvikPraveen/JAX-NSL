@@ -6,14 +6,14 @@ import jax.numpy as jnp
 import pytest
 from jax import random
 
-from core.arrays import (
+from jax_nsl.core.arrays import (
     get_dtype_info, safe_cast, tree_size, tree_bytes, tree_summary, check_finite
 )
-from core.prng import (
+from jax_nsl.core.prng import (
     PRNGSequence, glorot_uniform_init, glorot_normal_init,
     he_uniform_init, he_normal_init, random_like,
 )
-from core.numerics import (
+from jax_nsl.core.numerics import (
     safe_log, safe_exp, logsumexp_stable, stable_logsumexp,
     softmax_stable, stable_softmax, log_softmax_stable,
     clip_gradients, safe_divide, stable_sigmoid, safe_sqrt,
