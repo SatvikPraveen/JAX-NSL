@@ -1,373 +1,200 @@
 # File location: src/jax_nsl/transforms/control_flow.py
 
 """
-Control flow utilities: lax.cond, switch, while_loop patterns.
+Structured control flow: ``cond``, ``switch``, ``while_loop``, ``fori_loop``.
 
-This module provides utilities for JAX control flow operations
-with better error handling and common usage patterns.
+Rules that trip people up:
+
+* Both branches of ``lax.cond`` must return the same pytree *structure*,
+  shapes and dtypes - :func:`safe_cond` checks this eagerly and reports the
+  mismatch instead of the generic tracer error.
+* ``lax.cond`` under ``vmap`` becomes a ``select`` that evaluates *both*
+  branches; do not rely on it to skip expensive or unsafe work.
+* ``while_loop`` is not reverse-mode differentiable (dynamic trip count);
+  use ``fori_loop`` with static bounds or ``scan`` when you need gradients,
+  or implicit differentiation (see :mod:`jax_nsl.autodiff.implicit`).
 """
+
+from __future__ import annotations
+
+from typing import Any, Callable, List, Optional, Sequence, Tuple, Union
 
 import jax
 import jax.numpy as jnp
 from jax import lax
-from typing import Callable, Any, Optional, Union, Tuple, List
-import functools
+
+from jax_nsl.core.numerics import safe_divide  # noqa: F401  (re-export)
+from jax_nsl.core.numerics import softmax_stable as stable_softmax  # noqa: F401  (re-export)
+
+Array = jax.Array
 
 
-def safe_cond(pred: Union[bool, jnp.ndarray],
-             true_fun: Callable,
-             false_fun: Callable,
-             *operands,
-             linear: Tuple[bool, ...] = None) -> Any:
-    """Safe conditional execution with error handling.
-    
-    Args:
-        pred: Boolean condition
-        true_fun: Function to execute if pred is True
-        false_fun: Function to execute if pred is False
-        *operands: Arguments for the functions
-        linear: Linearity specification for operands
-        
-    Returns:
-        Result of conditional execution
+def _describe(tree: Any) -> str:
+    return str(jax.tree_util.tree_map(lambda a: f"{a.dtype}{list(a.shape)}", tree))
+
+
+def _check_same_structure(outputs: Sequence[Any], names: Sequence[str]) -> None:
+    ref = outputs[0]
+    ref_def = jax.tree_util.tree_structure(ref)
+    ref_leaves = jax.tree_util.tree_leaves(ref)
+    for out, name in zip(outputs[1:], names[1:]):
+        if jax.tree_util.tree_structure(out) != ref_def:
+            raise TypeError(f"Branch '{names[0]}' returns {_describe(ref)} but '{name}' returns "
+                            f"{_describe(out)}: pytree structures differ.")
+        for a, b in zip(ref_leaves, jax.tree_util.tree_leaves(out)):
+            if a.shape != b.shape or a.dtype != b.dtype:
+                raise TypeError(f"Branch '{names[0]}' returns {_describe(ref)} but '{name}' returns "
+                                f"{_describe(out)}: shapes/dtypes differ (a common cause is a "
+                                f"Python float in one branch and an int in the other).")
+
+
+def safe_cond(pred: Union[bool, Array], true_fun: Callable, false_fun: Callable, *operands) -> Any:
+    """``lax.cond`` that first checks the two branches agree in shape and dtype."""
+    outs = [jax.eval_shape(true_fun, *operands), jax.eval_shape(false_fun, *operands)]
+    _check_same_structure(outs, ["true_fun", "false_fun"])
+    return lax.cond(pred, true_fun, false_fun, *operands)
+
+
+def switch_case(index: Union[int, Array], branches: List[Callable], *operands) -> Any:
+    """``lax.switch`` with the same eager structure check as :func:`safe_cond`.
+
+    The index is clamped into range by ``lax.switch`` itself.
     """
-    try:
-        return lax.cond(pred, true_fun, false_fun, *operands, linear=linear)
-    except Exception as e:
-        print(f"Conditional execution failed: {e}")
-        # Try to execute both branches to check for errors
-        try:
-            true_result = true_fun(*operands)
-            false_result = false_fun(*operands)
-            # Return based on pred if possible
-            if isinstance(pred, bool):
-                return true_result if pred else false_result
-            else:
-                # For array pred, use where
-                return jnp.where(pred, true_result, false_result)
-        except:
-            raise e
+    outs = [jax.eval_shape(b, *operands) for b in branches]
+    _check_same_structure(outs, [f"branch[{i}]" for i in range(len(branches))])
+    return lax.switch(index, branches, *operands)
 
 
-def switch_case(index: Union[int, jnp.ndarray],
-               branches: List[Callable],
-               *operands,
-               linear: Tuple[bool, ...] = None) -> Any:
-    """Multi-way conditional execution.
-    
-    Args:
-        index: Branch index to execute
-        branches: List of functions for each branch
-        *operands: Arguments for the functions
-        linear: Linearity specification
-        
-    Returns:
-        Result of executing selected branch
-    """
-    try:
-        return lax.switch(index, branches, *operands, linear=linear)
-    except Exception as e:
-        print(f"Switch execution failed: {e}")
-        # Fallback to manual selection
-        if isinstance(index, int):
-            if 0 <= index < len(branches):
-                return branches[index](*operands)
-            else:
-                raise IndexError(f"Branch index {index} out of range")
-        else:
-            # For array indices, more complex fallback needed
-            raise e
-
-
-def while_loop_safe(cond_fun: Callable,
-                   body_fun: Callable,
-                   init_val: Any,
-                   max_iterations: Optional[int] = None) -> Any:
-    """Safe while loop with optional iteration limit.
-    
-    Args:
-        cond_fun: Condition function
-        body_fun: Loop body function
-        init_val: Initial value
-        max_iterations: Maximum iterations to prevent infinite loops
-        
-    Returns:
-        Final loop value
-    """
+def while_loop_safe(cond_fun: Callable, body_fun: Callable, init_val: Any,
+                    max_iterations: Optional[int] = None) -> Any:
+    """``while_loop`` with an optional iteration cap (guards against non-termination)."""
     if max_iterations is None:
         return lax.while_loop(cond_fun, body_fun, init_val)
-    
-    # Add iteration counter to prevent infinite loops
-    def augmented_cond(state):
+
+    def cond(state):
         val, count = state
         return jnp.logical_and(cond_fun(val), count < max_iterations)
-    
-    def augmented_body(state):
+
+    def body(state):
         val, count = state
-        new_val = body_fun(val)
-        return new_val, count + 1
-    
-    augmented_init = (init_val, 0)
-    final_state, _ = lax.while_loop(augmented_cond, augmented_body, augmented_init)
-    
-    return final_state
+        return body_fun(val), count + 1
+
+    final, _ = lax.while_loop(cond, body, (init_val, jnp.int32(0)))
+    return final
 
 
-def for_loop(lower: int,
-            upper: int,
-            body_fun: Callable,
-            init_val: Any,
-            unroll: int = 1) -> Any:
-    """For loop using lax.fori_loop.
-    
-    Args:
-        lower: Loop start (inclusive)
-        upper: Loop end (exclusive)
-        body_fun: Function (i, val) -> new_val
-        init_val: Initial accumulator value
-        unroll: Number of iterations to unroll
-        
-    Returns:
-        Final accumulator value
-    """
+bounded_while_loop = while_loop_safe
+
+
+def for_loop(lower: int, upper: int, body_fun: Callable, init_val: Any, unroll: int = 1) -> Any:
+    """``lax.fori_loop``; with static bounds it lowers to ``scan`` and is differentiable."""
     return lax.fori_loop(lower, upper, body_fun, init_val, unroll=unroll)
 
 
-def dynamic_slice_safe(operand: jnp.ndarray,
-                      start_indices: Union[List[int], jnp.ndarray],
-                      slice_sizes: Union[List[int], Tuple[int, ...]]) -> jnp.ndarray:
-    """Safe dynamic slicing with bounds checking.
-    
-    Args:
-        operand: Array to slice
-        start_indices: Starting indices for slice
-        slice_sizes: Size of slice in each dimension
-        
-    Returns:
-        Dynamically sliced array
+def dynamic_slice_safe(operand: Array, start_indices: Sequence[Any], slice_sizes: Sequence[int]) -> Array:
+    """``lax.dynamic_slice`` with start indices clamped so the slice stays in bounds.
+
+    ``lax.dynamic_slice`` already clamps, silently; this version makes the
+    behaviour explicit and works with a Python list of traced starts.
     """
-    # Ensure start_indices are within bounds
-    start_indices = jnp.asarray(start_indices)
-    operand_shape = jnp.array(operand.shape)
-    slice_sizes = jnp.array(slice_sizes)
-    
-    # Clamp start indices to valid range
-    max_start = operand_shape - slice_sizes
-    start_indices = jnp.maximum(0, jnp.minimum(start_indices, max_start))
-    
-    return lax.dynamic_slice(operand, start_indices, slice_sizes)
+    starts = [jnp.clip(jnp.asarray(s), 0, d - n)
+              for s, d, n in zip(start_indices, operand.shape, slice_sizes)]
+    return lax.dynamic_slice(operand, starts, slice_sizes)
 
 
-def conditional_update(condition: jnp.ndarray,
-                      x: jnp.ndarray,
-                      update_fun: Callable,
-                      *args) -> jnp.ndarray:
-    """Conditionally update array elements.
-    
-    Args:
-        condition: Boolean mask for updates
-        x: Array to update
-        update_fun: Function to compute new values
-        *args: Additional arguments for update_fun
-        
-    Returns:
-        Array with conditional updates applied
+def conditional_update(condition: Array, x: Array, update_fun: Callable, *args) -> Array:
+    """``where(condition, update_fun(x, *args), x)`` - elementwise masked update.
+
+    Both sides are always computed (there is no elementwise short-circuit on
+    accelerators); make sure ``update_fun`` is finite on the unselected
+    elements or the *gradient* will pick up NaNs through ``where``.
     """
-    def true_branch(*operands):
-        x_val = operands[0]
-        return update_fun(x_val, *operands[1:])
-    
-    def false_branch(*operands):
-        return operands[0]  # Return unchanged
-    
-    return jnp.where(
-        condition,
-        lax.cond(
-            jnp.any(condition),
-            true_branch,
-            false_branch,
-            x, *args
-        ),
-        x
-    )
+    return jnp.where(condition, update_fun(x, *args), x)
 
 
-def binary_search(f: Callable,
-                 target: float,
-                 low: float,
-                 high: float,
-                 tolerance: float = 1e-6,
-                 max_iterations: int = 100) -> float:
-    """Binary search using while_loop.
-    
-    Args:
-        f: Function to search over (must be monotonic)
-        target: Target value to find
-        low: Lower search bound
-        high: Upper search bound
-        tolerance: Convergence tolerance
-        max_iterations: Maximum search iterations
-        
-    Returns:
-        Input value where f(x) ≈ target
-    """
-    def cond_fun(state):
-        low_val, high_val, iterations = state
-        converged = jnp.abs(high_val - low_val) < tolerance
-        max_iters_reached = iterations >= max_iterations
-        return jnp.logical_not(jnp.logical_or(converged, max_iters_reached))
-    
-    def body_fun(state):
-        low_val, high_val, iterations = state
-        mid = (low_val + high_val) / 2
-        f_mid = f(mid)
-        
-        # Update bounds based on comparison
-        new_low = lax.cond(f_mid < target, lambda: mid, lambda: low_val)
-        new_high = lax.cond(f_mid < target, lambda: high_val, lambda: mid)
-        
-        return new_low, new_high, iterations + 1
-    
-    initial_state = (low, high, 0)
-    final_low, final_high, _ = lax.while_loop(cond_fun, body_fun, initial_state)
-    
-    return (final_low + final_high) / 2
+def binary_search(f: Callable[[Array], Array], target: float, low: float, high: float,
+                  tolerance: float = 1e-6, max_iterations: int = 100) -> Array:
+    """Bisection for ``f(x) = target`` on a monotone ``f`` using ``while_loop``."""
+    def cond(state):
+        lo, hi, k = state
+        return jnp.logical_and(jnp.abs(hi - lo) >= tolerance, k < max_iterations)
+
+    def body(state):
+        lo, hi, k = state
+        mid = (lo + hi) / 2
+        below = f(mid) < target
+        return jnp.where(below, mid, lo), jnp.where(below, hi, mid), k + 1
+
+    lo, hi, _ = lax.while_loop(cond, body, (jnp.asarray(low, jnp.float32),
+                                            jnp.asarray(high, jnp.float32), jnp.int32(0)))
+    return (lo + hi) / 2
 
 
-def iterative_solver(f: Callable,
-                    x0: jnp.ndarray,
-                    tolerance: float = 1e-6,
-                    max_iterations: int = 100,
-                    damping: float = 1.0) -> Tuple[jnp.ndarray, bool]:
-    """Generic iterative solver using while_loop.
-    
-    Args:
-        f: Update function x -> x_new
-        x0: Initial guess
-        tolerance: Convergence tolerance
-        max_iterations: Maximum iterations
-        damping: Damping factor for updates
-        
-    Returns:
-        (solution, converged) tuple
-    """
-    def cond_fun(state):
-        x, x_prev, iterations, converged = state
-        not_converged = jnp.logical_not(converged)
-        not_max_iters = iterations < max_iterations
-        return jnp.logical_and(not_converged, not_max_iters)
-    
-    def body_fun(state):
-        x, x_prev, iterations, _ = state
-        x_new = f(x)
-        
-        # Apply damping
-        x_damped = x + damping * (x_new - x)
-        
-        # Check convergence
-        diff = jnp.linalg.norm(x_damped - x)
-        converged = diff < tolerance
-        
-        return x_damped, x, iterations + 1, converged
-    
-    initial_state = (x0, x0, 0, False)
-    final_x, _, iterations, converged = lax.while_loop(cond_fun, body_fun, initial_state)
-    
-    return final_x, converged
+def iterative_solver(f: Callable[[Array], Array], x0: Array, tolerance: float = 1e-6,
+                     max_iterations: int = 100, damping: float = 1.0) -> Tuple[Array, Array]:
+    """Damped fixed-point iteration ``x <- x + damping * (f(x) - x)``; returns ``(x, converged)``."""
+    def cond(state):
+        _, diff, k = state
+        return jnp.logical_and(diff >= tolerance, k < max_iterations)
+
+    def body(state):
+        x, _, k = state
+        x_new = x + damping * (f(x) - x)
+        return x_new, jnp.linalg.norm(x_new - x), k + 1
+
+    x, diff, _ = lax.while_loop(cond, body, (x0, jnp.asarray(jnp.inf, x0.dtype), jnp.int32(0)))
+    return x, diff < tolerance
 
 
-def select_n(pred: jnp.ndarray,
-            on_true: jnp.ndarray,
-            on_false: jnp.ndarray) -> jnp.ndarray:
-    """Generalized select operation.
-    
-    Args:
-        pred: Boolean condition array
-        on_true: Values to select when pred is True
-        on_false: Values to select when pred is False
-        
-    Returns:
-        Selected values
-    """
+def select_n(pred: Array, on_true: Array, on_false: Array) -> Array:
+    """``lax.select`` (no broadcasting, unlike ``jnp.where``)."""
     return lax.select(pred, on_true, on_false)
 
 
-def gather_nd(params: jnp.ndarray,
-             indices: jnp.ndarray,
-             batch_dims: int = 0) -> jnp.ndarray:
-    """N-dimensional gather operation.
-    
-    Args:
-        params: Parameter array to gather from
-        indices: Indices for gathering
-        batch_dims: Number of batch dimensions
-        
-    Returns:
-        Gathered values
-    """
-    return lax.gather(
-        params,
-        indices,
-        lax.GatherDimensionNumbers(
-            offset_dims=tuple(range(batch_dims, len(params.shape))),
-            collapsed_slice_dims=tuple(range(len(indices.shape) - 1)),
-            start_index_map=tuple(range(len(indices.shape) - 1))
-        ),
-        slice_sizes=(1,) * (len(indices.shape) - 1) + params.shape[len(indices.shape) - 1:]
-    )
+def gather_nd(params: Array, indices: Array) -> Array:
+    """TensorFlow-style ``gather_nd``: ``indices[..., k]`` index the first ``k`` axes of ``params``."""
+    k = indices.shape[-1]
+    return params[tuple(jnp.moveaxis(indices, -1, 0))] if k > 0 else params
 
 
-def scatter_add_nd(operand: jnp.ndarray,
-                  indices: jnp.ndarray,
-                  updates: jnp.ndarray) -> jnp.ndarray:
-    """N-dimensional scatter-add operation.
-    
-    Args:
-        operand: Base array to scatter into
-        indices: Indices where to scatter
-        updates: Values to add
-        
-    Returns:
-        Array with scattered updates added
-    """
-    return lax.scatter_add(
-        operand,
-        indices,
-        updates,
-        lax.ScatterDimensionNumbers(
-            update_window_dims=tuple(range(1, len(updates.shape))),
-            inserted_window_dims=(0,),
-            scatter_dims_to_operand_dims=(0,)
-        )
-    )
+def scatter_add_nd(operand: Array, indices: Array, updates: Array) -> Array:
+    """``operand.at[indices].add(updates)`` for ``indices`` of shape ``(n, k)``."""
+    return operand.at[tuple(jnp.moveaxis(indices, -1, 0))].add(updates)
 
 
 # ---------------------------------------------------------------------------
-# Re-exports from core for convenience
+# Gradient shaping
 # ---------------------------------------------------------------------------
 
-from jax_nsl.core.numerics import safe_divide, softmax_stable as stable_softmax  # noqa: E402
-
-
-def clip_gradient(x: jnp.ndarray,
-                  min_val: float = -1.0,
-                  max_val: float = 1.0) -> jnp.ndarray:
-    """Element-wise gradient clipping with straight-through forward pass.
-
-    Forward: returns *x* unchanged.
-    Backward: clips the incoming gradient to [*min_val*, *max_val*].
-
-    This is a thin wrapper around
-    :func:`~jax_nsl.autodiff.custom_vjp.clip_gradient_vjp` for users who
-    prefer to import from the ``transforms.control_flow`` namespace.
-
-    Args:
-        x: Input array.
-        min_val: Lower gradient clip bound.
-        max_val: Upper gradient clip bound.
-
-    Returns:
-        *x* (forward pass is identity).
-    """
+def clip_gradient(x: Array, min_val: float = -1.0, max_val: float = 1.0) -> Array:
+    """Identity forward; clips the incoming gradient elementwise in the backward pass."""
     from jax_nsl.autodiff.custom_vjp import clip_gradient_vjp
-    return clip_gradient_vjp(x, min_val=min_val, max_val=max_val)
+
+    return clip_gradient_vjp(x, min_val, max_val)
+
+
+def clip_gradient_norm(fun: Callable, max_norm: float) -> Callable:
+    """Transform ``fun`` so that ``grad(fun)`` has global norm at most ``max_norm``.
+
+    Implemented as an identity on the *inputs* with a custom VJP that rescales
+    the cotangent - so it composes with ``jit``, ``vmap`` and any optimiser.
+    """
+    @jax.custom_vjp
+    def clipped_identity(x):
+        return x
+
+    def fwd(x):
+        return x, None
+
+    def bwd(_, g):
+        leaves = jax.tree_util.tree_leaves(g)
+        norm = jnp.sqrt(sum(jnp.sum(jnp.square(leaf)) for leaf in leaves))
+        factor = jnp.minimum(1.0, max_norm / (norm + 1e-12))
+        return (jax.tree_util.tree_map(lambda leaf: leaf * factor, g),)
+
+    clipped_identity.defvjp(fwd, bwd)
+
+    def wrapped(x, *args, **kwargs):
+        return fun(clipped_identity(x), *args, **kwargs)
+
+    return wrapped

@@ -1,348 +1,338 @@
 # tests/test_transforms.py
+"""Tests for jax_nsl.transforms: jit, vmap, scan and control-flow utilities."""
 
 import jax
 import jax.numpy as jnp
 import pytest
-from jax import jit, vmap, grad, random
-from jax_nsl.transforms.jit_utils import jit_with_static, efficient_jit, benchmark_jit
-from jax_nsl.transforms.vmap_utils import batched_matmul, batched_gradient, parallel_apply
-from jax_nsl.transforms.scan_utils import cumulative_sum, rnn_scan, solve_ode
-from jax_nsl.transforms.control_flow import safe_divide, clip_gradient, stable_softmax
+from jax import grad, jit, random, vmap
+
+from jax_nsl.transforms.control_flow import (
+    binary_search,
+    clip_gradient,
+    clip_gradient_norm,
+    conditional_update,
+    gather_nd,
+    iterative_solver,
+    safe_cond,
+    safe_divide,
+    scatter_add_nd,
+    stable_softmax,
+    switch_case,
+    while_loop_safe,
+)
+from jax_nsl.transforms.jit_utils import (
+    aot_compile,
+    benchmark_jit,
+    compile_info,
+    count_compilations,
+    efficient_jit,
+    jit_with_static,
+    profile_jit_compilation,
+)
+from jax_nsl.transforms.scan_utils import (
+    cumulative_sum,
+    dynamic_rnn,
+    linear_recurrence,
+    parallel_cumsum,
+    rnn_scan,
+    running_statistics,
+    scan_layers,
+    scan_with_checkpointing,
+    solve_ode,
+    stack_params,
+    windowed_scan,
+)
+from jax_nsl.transforms.vmap_utils import (
+    batched_gradient,
+    batched_matmul,
+    chunked_vmap,
+    clip_per_example_gradients,
+    loop_batch_apply,
+    parallel_apply,
+    per_example_gradients,
+    vmap_with_signature,
+)
 
 
 class TestJitUtils:
-    """Test JIT compilation utilities."""
-    
     def test_jit_with_static(self):
-        """Test JIT with static arguments."""
-        def compute_power(x, n):
-            return x ** n
-        
-        jitted_fn = jit_with_static(compute_power, static_argnums=(1,))
-        
+        f = jit_with_static(lambda x, n: x**n, static_argnums=(1,))
         x = jnp.array([1.0, 2.0, 3.0])
-        result = jitted_fn(x, 3)
-        expected = x ** 3
-        
-        assert jnp.allclose(result, expected)
-    
+        assert jnp.allclose(f(x, 3), x**3)
+
     def test_efficient_jit(self):
-        """Test efficient JIT compilation."""
-        def simple_fn(x):
-            return x * 2 + 1
-        
-        jitted_fn = efficient_jit(simple_fn)
-        
+        f = efficient_jit(lambda x: x * 2 + 1)
         x = jnp.array([1.0, 2.0, 3.0])
-        result = jitted_fn(x)
-        expected = x * 2 + 1
-        
-        assert jnp.allclose(result, expected)
-    
+        assert jnp.allclose(f(x), x * 2 + 1)
+
     def test_benchmark_jit(self):
-        """Test JIT benchmarking utility."""
-        def matrix_multiply(x, y):
-            return jnp.dot(x, y)
-        
-        key = random.PRNGKey(0)
-        x = random.normal(key, (100, 100))
-        y = random.normal(key, (100, 100))
-        
-        warmup_time, run_time = benchmark_jit(matrix_multiply, x, y, 
-                                            warmup_runs=3, benchmark_runs=5)
-        
-        assert warmup_time > 0
-        assert run_time > 0
-        assert isinstance(warmup_time, float)
-        assert isinstance(run_time, float)
+        x = random.normal(random.PRNGKey(0), (64, 64))
+        warm, run = benchmark_jit(jnp.dot, x, x, warmup_runs=2, benchmark_runs=3)
+        assert warm > 0 and run > 0
+
+    def test_count_compilations_detects_retrace(self):
+        f = count_compilations(lambda x: x + 1)
+        f(jnp.ones(3)); f(jnp.ones(3))
+        assert f.compilation_count() == 1
+        f(jnp.ones(4))  # new shape -> retrace
+        assert f.compilation_count() == 2
+        f(jnp.ones(4, jnp.int32))  # new dtype -> retrace
+        assert f.compilation_count() == 3
+
+    def test_aot_compile_and_info(self):
+        compiled = aot_compile(lambda a, b: a @ b, jnp.ones((8, 8)), jnp.ones((8, 8)))
+        assert jnp.allclose(compiled(jnp.ones((8, 8)), jnp.ones((8, 8))), 8.0)
+        info = compile_info(compiled)
+        assert info["flops"] is None or info["flops"] >= 2 * 8 * 8 * 8 - 64
+
+    def test_profile_jit_compilation(self):
+        stats = profile_jit_compilation(lambda x: jnp.sin(x).sum(), jnp.ones(100))
+        assert set(stats) >= {"compile_time", "jit_exec_time", "no_jit_time", "speedup"}
 
 
 class TestVmapUtils:
-    """Test vectorization utilities."""
-    
     def test_batched_matmul(self):
-        """Test batched matrix multiplication."""
-        batch_size = 4
-        dim = 3
-        
-        key = random.PRNGKey(0)
-        key1, key2 = random.split(key)
-        
-        A = random.normal(key1, (batch_size, dim, dim))
-        B = random.normal(key2, (batch_size, dim, dim))
-        
-        result = batched_matmul(A, B)
-        
-        # Check shape
-        assert result.shape == (batch_size, dim, dim)
-        
-        # Compare with manual batch computation
-        expected = jnp.stack([A[i] @ B[i] for i in range(batch_size)])
-        assert jnp.allclose(result, expected)
-    
+        k1, k2 = random.split(random.PRNGKey(0))
+        a = random.normal(k1, (4, 3, 3))
+        b = random.normal(k2, (4, 3, 3))
+        expected = jnp.stack([a[i] @ b[i] for i in range(4)])
+        assert jnp.allclose(batched_matmul(a, b), expected, atol=1e-5)
+
     def test_batched_gradient(self):
-        """Test batched gradient computation."""
-        def quadratic(x):
-            return jnp.sum(x**2)
-        
-        batch_size = 5
-        dim = 3
-        
-        key = random.PRNGKey(42)
-        x_batch = random.normal(key, (batch_size, dim))
-        
-        grads = batched_gradient(quadratic, x_batch)
-        
-        # Check shape
-        assert grads.shape == (batch_size, dim)
-        
-        # Compare with individual gradients
-        grad_fn = grad(quadratic)
-        expected = jnp.stack([grad_fn(x_batch[i]) for i in range(batch_size)])
-        assert jnp.allclose(grads, expected)
-    
+        quadratic = lambda x: jnp.sum(x**2)  # noqa: E731
+        x = random.normal(random.PRNGKey(42), (5, 3))
+        assert jnp.allclose(batched_gradient(quadratic, x), 2 * x)
+
     def test_parallel_apply(self):
-        """Test parallel function application."""
-        def square_and_add(x, offset):
-            return x**2 + offset
-        
         xs = jnp.array([1.0, 2.0, 3.0, 4.0])
         offsets = jnp.array([0.1, 0.2, 0.3, 0.4])
-        
-        results = parallel_apply(square_and_add, xs, offsets)
-        expected = xs**2 + offsets
-        
-        assert jnp.allclose(results, expected)
+        out = parallel_apply(lambda x, o: x**2 + o, xs, offsets)
+        assert jnp.allclose(out, xs**2 + offsets)
+        assert jnp.allclose(loop_batch_apply(lambda x: x**2, xs), xs**2)
+
+    def test_per_example_gradients_mean_equals_batch_gradient(self):
+        params = {"w": jnp.array([1.0, -1.0]), "b": jnp.array(0.5)}
+        xs = random.normal(random.PRNGKey(0), (8, 2))
+        ys = random.normal(random.PRNGKey(1), (8,))
+
+        def loss(p, x, y):
+            return (p["w"] @ x + p["b"] - y) ** 2
+
+        pe = per_example_gradients(loss, params, xs, ys)
+        assert pe["w"].shape == (8, 2) and pe["b"].shape == (8,)
+        batch_grad = grad(lambda p: jnp.mean(vmap(loss, in_axes=(None, 0, 0))(p, xs, ys)))(params)
+        assert jnp.allclose(jnp.mean(pe["w"], axis=0), batch_grad["w"], atol=1e-5)
+
+    def test_clip_per_example_gradients(self):
+        pe = {"w": jnp.array([[3.0, 4.0], [0.3, 0.4]]), "b": jnp.array([0.0, 0.0])}
+        clipped = clip_per_example_gradients(pe, max_norm=1.0)
+        # example 0 has norm 5 -> scaled by 0.2; example 1 has norm 0.5 -> unchanged
+        assert jnp.allclose(clipped["w"], (jnp.array([0.6, 0.8]) + jnp.array([0.3, 0.4])) / 2)
+
+    def test_chunked_vmap_matches_vmap_with_remainder(self):
+        xs = random.normal(random.PRNGKey(0), (10, 3))
+        f = lambda x: jnp.sum(x**2)  # noqa: E731
+        assert jnp.allclose(chunked_vmap(f, xs, chunk_size=4), vmap(f)(xs))
+
+    def test_vmap_with_signature(self):
+        @vmap_with_signature("(m,n),(n)->(m)")
+        def matvec(a, x):
+            return a @ x
+
+        a = random.normal(random.PRNGKey(0), (5, 3, 2))
+        x = random.normal(random.PRNGKey(1), (5, 2))
+        assert jnp.allclose(matvec(a, x), jnp.einsum("bmn,bn->bm", a, x), atol=1e-5)
 
 
 class TestScanUtils:
-    """Test scan operation utilities."""
-    
-    def test_cumulative_sum(self):
-        """Test cumulative sum implementation."""
+    def test_cumulative_sums(self):
         xs = jnp.array([1.0, 2.0, 3.0, 4.0, 5.0])
-        result = cumulative_sum(xs)
-        expected = jnp.cumsum(xs)
-        
-        assert jnp.allclose(result, expected)
-    
+        assert jnp.allclose(cumulative_sum(xs), jnp.cumsum(xs))
+        assert jnp.allclose(parallel_cumsum(xs), jnp.cumsum(xs))
+        m = random.normal(random.PRNGKey(0), (3, 4))
+        assert jnp.allclose(cumulative_sum(m, axis=1), jnp.cumsum(m, axis=1), atol=1e-6)
+
+    def test_linear_recurrence_matches_sequential(self):
+        a = random.uniform(random.PRNGKey(0), (16, 2), minval=0.5, maxval=0.99)
+        b = random.normal(random.PRNGKey(1), (16, 2))
+        x_par = linear_recurrence(a, b)
+
+        def step(x, ab):
+            x = ab[0] * x + ab[1]
+            return x, x
+
+        _, x_seq = jax.lax.scan(step, jnp.zeros(2), (a, b))
+        assert jnp.allclose(x_par, x_seq, atol=1e-5)
+
+    def test_running_statistics_welford(self):
+        xs = random.normal(random.PRNGKey(0), (50,)) * 3 + 100.0
+        means, variances = running_statistics(xs)
+        assert jnp.allclose(means[-1], jnp.mean(xs), atol=1e-4)
+        assert jnp.allclose(variances[-1], jnp.var(xs, ddof=1), rtol=1e-3)
+        assert variances[0] == 0.0
+
     def test_rnn_scan(self):
-        """Test RNN-style scanning."""
-        # Simple RNN cell: h_t = tanh(W_h * h_{t-1} + W_x * x_t)
-        hidden_dim = 4
-        input_dim = 3
-        seq_len = 5
-        
-        key = random.PRNGKey(0)
-        key1, key2, key3 = random.split(key, 3)
-        
-        W_h = random.normal(key1, (hidden_dim, hidden_dim))
-        W_x = random.normal(key2, (hidden_dim, input_dim))
-        inputs = random.normal(key3, (seq_len, input_dim))
-        h0 = jnp.zeros(hidden_dim)
-        
-        def rnn_cell(h, x):
-            h_new = jnp.tanh(W_h @ h + W_x @ x)
+        k1, k2, k3 = random.split(random.PRNGKey(0), 3)
+        w_h = random.normal(k1, (4, 4))
+        w_x = random.normal(k2, (4, 3))
+        inputs = random.normal(k3, (5, 3))
+
+        def cell(h, x):
+            h_new = jnp.tanh(w_h @ h + w_x @ x)
             return h_new, h_new
-        
-        final_h, all_h = rnn_scan(rnn_cell, h0, inputs)
-        
-        # Check shapes
-        assert final_h.shape == (hidden_dim,)
-        assert all_h.shape == (seq_len, hidden_dim)
-        
-        # Manual verification for first step
-        h1_manual = jnp.tanh(W_h @ h0 + W_x @ inputs[0])
-        assert jnp.allclose(all_h[0], h1_manual)
-    
-    def test_solve_ode(self):
-        """Test ODE solving with scan."""
-        # Simple ODE: dy/dt = -y, solution: y(t) = y0 * exp(-t)
-        def dydt(y, t):
-            return -y
-        
-        y0 = jnp.array([2.0])
-        t_span = jnp.linspace(0, 1, 11)
-        
-        solution = solve_ode(dydt, y0, t_span)
-        
-        # Analytical solution
-        expected = y0 * jnp.exp(-t_span)
-        
-        # Should be reasonably close (Euler method is approximate)
-        assert jnp.allclose(solution[:, 0], expected, rtol=1e-1)
+
+        final_h, all_h = rnn_scan(cell, jnp.zeros(4), inputs)
+        assert final_h.shape == (4,) and all_h.shape == (5, 4)
+        assert jnp.allclose(all_h[0], jnp.tanh(w_x @ inputs[0]))
+        _, rev = rnn_scan(cell, jnp.zeros(4), inputs, reverse=True)
+        assert jnp.allclose(rev[-1], jnp.tanh(w_x @ inputs[-1]))
+
+    def test_dynamic_rnn_freezes_after_length(self):
+        def cell(h, x):
+            return h + x, h + x
+
+        inputs = jnp.ones((4, 2, 1))  # time=4, batch=2
+        lengths = jnp.array([2, 4])
+        final, outs = dynamic_rnn(cell, inputs, lengths, jnp.zeros((2, 1)))
+        assert jnp.allclose(final[:, 0], jnp.array([2.0, 4.0]))
+        assert jnp.allclose(outs[:, 0, 0], jnp.array([1.0, 2.0, 0.0, 0.0]))
+
+    def test_scan_layers_equals_loop(self):
+        layers = [{"w": random.normal(random.PRNGKey(i), (3, 3))} for i in range(4)]
+        layer = lambda p, x: jnp.tanh(p["w"] @ x)  # noqa: E731
+        x = jnp.ones(3)
+        expected = x
+        for p in layers:
+            expected = layer(p, expected)
+        stacked = stack_params(layers)
+        assert stacked["w"].shape == (4, 3, 3)
+        assert jnp.allclose(scan_layers(layer, stacked, x), expected, atol=1e-6)
+        assert jnp.allclose(scan_layers(layer, stacked, x, remat=True), expected, atol=1e-6)
+
+    @pytest.mark.parametrize("method,tol", [("euler", 6e-2), ("midpoint", 2e-3), ("rk4", 1e-5)])
+    def test_solve_ode_orders(self, method, tol):
+        t = jnp.linspace(0.0, 1.0, 11)
+        sol = solve_ode(lambda y, t: -y, jnp.array([2.0]), t, method=method)
+        assert sol.shape == (11, 1)
+        assert jnp.allclose(sol[:, 0], 2.0 * jnp.exp(-t), rtol=tol)
+
+    def test_solve_ode_is_differentiable_wrt_parameters(self):
+        t = jnp.linspace(0.0, 1.0, 21)
+
+        def final_value(k):
+            return solve_ode(lambda y, t: -k * y, jnp.array(1.0), t)[-1]
+
+        # y(1) = exp(-k) -> dy/dk = -exp(-k)
+        assert jnp.allclose(grad(final_value)(0.5), -jnp.exp(-0.5), atol=1e-4)
+
+    def test_scan_with_checkpointing_matches_plain_scan(self):
+        w = random.normal(random.PRNGKey(0), (3, 3)) * 0.3
+        xs = random.normal(random.PRNGKey(1), (11, 3))  # 11 is not a multiple of 4
+
+        def body(h, x):
+            h = jnp.tanh(w @ h + x)
+            return h, h
+
+        def run(fn):
+            def loss(w_):
+                def body_w(h, x):
+                    h = jnp.tanh(w_ @ h + x)
+                    return h, h
+                carry, ys = fn(body_w)
+                return jnp.sum(ys) + jnp.sum(carry)
+            return loss
+
+        plain = run(lambda b: jax.lax.scan(b, jnp.zeros(3), xs))
+        remat = run(lambda b: scan_with_checkpointing(b, jnp.zeros(3), xs, checkpoint_every=4))
+        assert jnp.allclose(plain(w), remat(w), atol=1e-6)
+        assert jnp.allclose(grad(plain)(w), grad(remat)(w), atol=1e-5)
+
+    def test_windowed_scan(self):
+        xs = jnp.arange(6.0)
+        _, out = windowed_scan(jnp.sum, xs, window_size=3, stride=1)
+        assert jnp.allclose(out, jnp.array([3.0, 6.0, 9.0, 12.0]))
 
 
 class TestControlFlow:
-    """Test control flow utilities."""
-    
     def test_safe_divide(self):
-        """Test safe division implementation."""
-        x = jnp.array([1.0, 2.0, 3.0])
-        y = jnp.array([2.0, 0.0, 0.5])
-        
-        result = safe_divide(x, y)
-        
-        # Check non-zero divisions
-        assert jnp.allclose(result[0], 0.5)
-        assert jnp.allclose(result[2], 6.0)
-        
-        # Check zero division handling
-        assert jnp.isfinite(result[1])  # Should not be NaN/Inf
-    
-    def test_clip_gradient(self):
-        """Test gradient clipping."""
-        def loss_fn(x):
-            return jnp.sum(x**2)
-        
+        result = safe_divide(jnp.array([1.0, 2.0, 3.0]), jnp.array([2.0, 0.0, 0.5]))
+        assert jnp.allclose(result[0], 0.5) and jnp.allclose(result[2], 6.0, rtol=1e-6)
+        assert jnp.isfinite(result[1])
+
+    def test_safe_cond_reports_mismatch(self):
+        with pytest.raises(TypeError, match="differ"):
+            safe_cond(True, lambda x: x, lambda x: x.astype(jnp.int32), jnp.ones(2))
+        assert safe_cond(jnp.array(False), lambda x: x + 1, lambda x: x - 1, jnp.ones(2))[0] == 0.0
+
+    def test_switch_case(self):
+        branches = [lambda x: x, lambda x: 2 * x, lambda x: 3 * x]
+        assert switch_case(jnp.int32(2), branches, jnp.ones(1))[0] == 3.0
+        assert jit(lambda i: switch_case(i, branches, jnp.ones(1)))(1)[0] == 2.0
+
+    def test_while_loop_safe_cap(self):
+        out = while_loop_safe(lambda v: v < 100, lambda v: v + 1, 0, max_iterations=10)
+        assert out == 10
+
+    def test_conditional_update(self):
+        x = jnp.array([1.0, -2.0, 3.0])
+        assert jnp.array_equal(conditional_update(x < 0, x, lambda v: -v), jnp.abs(x))
+
+    def test_binary_search_and_iterative_solver(self):
+        root = binary_search(lambda x: x**2, 2.0, 0.0, 2.0, tolerance=1e-5)
+        assert jnp.allclose(root, jnp.sqrt(2.0), atol=1e-4)
+        x, conv = iterative_solver(lambda x: jnp.cos(x), jnp.array(1.0), tolerance=1e-6, max_iterations=200)
+        assert bool(conv) and jnp.allclose(x, jnp.cos(x), atol=1e-5)
+
+    def test_gather_scatter_nd(self):
+        params = jnp.arange(12.0).reshape(3, 4)
+        idx = jnp.array([[0, 1], [2, 3]])
+        assert jnp.array_equal(gather_nd(params, idx), jnp.array([1.0, 11.0]))
+        out = scatter_add_nd(jnp.zeros((3, 4)), idx, jnp.array([1.0, 2.0]))
+        assert out[0, 1] == 1.0 and out[2, 3] == 2.0
+
+    def test_clip_gradient_elementwise(self):
+        g = grad(lambda x: jnp.sum(clip_gradient(x, -1.0, 1.0) ** 2))(jnp.array([10.0, 0.1]))
+        assert jnp.allclose(g, jnp.array([1.0, 0.2]))
+
+    def test_clip_gradient_norm_transform(self):
+        loss = lambda x: jnp.sum(x**2)  # noqa: E731
         x = jnp.array([10.0, -5.0, 2.0])
-        max_norm = 1.0
-        
-        clipped_loss = clip_gradient(loss_fn, max_norm)
-        grad_fn = grad(clipped_loss)
-        
-        grad_val = grad_fn(x)
-        grad_norm = jnp.linalg.norm(grad_val)
-        
-        # Gradient norm should be clipped
-        assert grad_norm <= max_norm + 1e-6
-    
-    def test_stable_softmax(self):
-        """Test numerically stable softmax."""
-        # Test with large values that would overflow normal softmax
-        x = jnp.array([1000.0, 999.0, 1001.0])
-        
-        result = stable_softmax(x)
-        
-        # Should sum to 1
-        assert jnp.allclose(jnp.sum(result), 1.0)
-        
-        # Should be positive
-        assert jnp.all(result > 0)
-        
-        # Should not have NaN or Inf
-        assert jnp.all(jnp.isfinite(result))
+        g = grad(clip_gradient_norm(loss, max_norm=1.0))(x)
+        assert jnp.linalg.norm(g) <= 1.0 + 1e-6
+        assert jnp.allclose(g / jnp.linalg.norm(g), grad(loss)(x) / jnp.linalg.norm(grad(loss)(x)))
+        g_small = grad(clip_gradient_norm(loss, max_norm=100.0))(x)
+        assert jnp.allclose(g_small, grad(loss)(x))
+
+    def test_stable_softmax_reexport(self):
+        out = stable_softmax(jnp.array([1000.0, 999.0, 1001.0]))
+        assert jnp.allclose(jnp.sum(out), 1.0) and jnp.all(jnp.isfinite(out))
 
 
 class TestTransformComposition:
-    """Test composition of multiple transforms."""
-    
     def test_jit_vmap_composition(self):
-        """Test JIT + vmap composition."""
-        def matrix_vector_product(A, x):
-            return A @ x
-        
-        # Create batched version
-        batched_fn = vmap(matrix_vector_product, in_axes=(0, 0))
-        jitted_batched_fn = jit(batched_fn)
-        
-        batch_size = 3
-        dim = 4
-        
-        key = random.PRNGKey(0)
-        key1, key2 = random.split(key)
-        
-        A_batch = random.normal(key1, (batch_size, dim, dim))
-        x_batch = random.normal(key2, (batch_size, dim))
-        
-        result = jitted_batched_fn(A_batch, x_batch)
-        
-        # Check shape and correctness
-        assert result.shape == (batch_size, dim)
-        
-        expected = jnp.stack([A_batch[i] @ x_batch[i] for i in range(batch_size)])
-        assert jnp.allclose(result, expected)
-    
+        f = jit(vmap(lambda a, x: a @ x, in_axes=(0, 0)))
+        k1, k2 = random.split(random.PRNGKey(0))
+        a = random.normal(k1, (3, 4, 4))
+        x = random.normal(k2, (3, 4))
+        assert jnp.allclose(f(a, x), jnp.einsum("bij,bj->bi", a, x), atol=1e-5)
+
     def test_grad_jit_vmap_composition(self):
-        """Test grad + JIT + vmap composition."""
-        def quadratic_loss(w, x, y):
-            pred = jnp.dot(w, x)
-            return 0.5 * (pred - y)**2
-        
-        # Batched gradient computation
-        grad_fn = grad(quadratic_loss, argnums=0)
-        batched_grad_fn = vmap(grad_fn, in_axes=(None, 0, 0))
-        jitted_batched_grad_fn = jit(batched_grad_fn)
-        
-        dim = 5
-        batch_size = 10
-        
-        key = random.PRNGKey(42)
-        key1, key2, key3 = random.split(key, 3)
-        
-        w = random.normal(key1, (dim,))
-        x_batch = random.normal(key2, (batch_size, dim))
-        y_batch = random.normal(key3, (batch_size,))
-        
-        grads = jitted_batched_grad_fn(w, x_batch, y_batch)
-        
-        assert grads.shape == (batch_size, dim)
-    
-    def test_scan_vmap_composition(self):
-        """Test scan + vmap composition."""
-        def step_fn(carry, x):
-            new_carry = carry + x
-            output = new_carry
-            return new_carry, output
-        
-        # Apply scan to multiple sequences
-        def multi_scan(init_carries, sequences):
-            return vmap(lambda carry, seq: jax.lax.scan(step_fn, carry, seq))(
-                init_carries, sequences)
-        
-        batch_size = 3
-        seq_len = 5
-        
-        init_carries = jnp.array([0.0, 1.0, 2.0])
-        sequences = jnp.ones((batch_size, seq_len))
-        
-        final_carries, outputs = multi_scan(init_carries, sequences)
-        
-        assert final_carries.shape == (batch_size,)
-        assert outputs.shape == (batch_size, seq_len)
+        def loss(w, x, y):
+            return 0.5 * (jnp.dot(w, x) - y) ** 2
 
+        f = jit(vmap(grad(loss), in_axes=(None, 0, 0)))
+        k1, k2, k3 = random.split(random.PRNGKey(42), 3)
+        grads = f(random.normal(k1, (5,)), random.normal(k2, (10, 5)), random.normal(k3, (10,)))
+        assert grads.shape == (10, 5)
 
-class TestTransformEdgeCases:
-    """Test edge cases for transforms."""
-    
-    def test_empty_batch_vmap(self):
-        """Test vmap with empty batches."""
-        def simple_fn(x):
-            return x * 2
-        
-        empty_batch = jnp.zeros((0, 3))
-        result = vmap(simple_fn)(empty_batch)
-        
-        assert result.shape == (0, 3)
-    
-    def test_scalar_vmap(self):
-        """Test vmap with scalar operations."""
-        def scalar_fn(x):
-            return x**2 + 1
-        
-        scalars = jnp.array([1.0, 2.0, 3.0])
-        result = vmap(scalar_fn)(scalars)
-        expected = scalars**2 + 1
-        
-        assert jnp.allclose(result, expected)
-    
-    def test_nested_scan(self):
-        """Test nested scan operations."""
-        def outer_step(outer_carry, outer_x):
-            def inner_step(inner_carry, inner_x):
-                return inner_carry + inner_x, inner_carry + inner_x
-            
-            inner_seq = jnp.ones(3) * outer_x
-            final_inner, inner_outputs = jax.lax.scan(inner_step, 0.0, inner_seq)
-            
-            new_outer_carry = outer_carry + final_inner
-            return new_outer_carry, inner_outputs
-        
-        outer_seq = jnp.array([1.0, 2.0])
-        final_carry, outputs = jax.lax.scan(outer_step, 0.0, outer_seq)
-        
-        assert outputs.shape == (2, 3)
-        assert jnp.isfinite(final_carry)
+    def test_vmap_of_scan(self):
+        def step(carry, x):
+            return carry + x, carry + x
+
+        f = vmap(lambda c, s: jax.lax.scan(step, c, s))
+        finals, outs = f(jnp.array([0.0, 1.0, 2.0]), jnp.ones((3, 5)))
+        assert jnp.allclose(finals, jnp.array([5.0, 6.0, 7.0]))
+        assert outs.shape == (3, 5)
 
 
 if __name__ == "__main__":
