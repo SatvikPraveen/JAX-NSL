@@ -1,369 +1,197 @@
 # File location: src/jax_nsl/linalg/ops.py
 
 """
-Matrix operations: matmul, einsum, SVD/QR/eigendecomposition.
+Matrix operations with attention to precision and conditioning.
 
-This module provides enhanced linear algebra operations with
-numerical stability and batching support.
+Notes on JAX linear algebra:
+
+* ``jnp.linalg`` never raises ``LinAlgError`` inside traced code - a singular
+  or non-PD input yields ``nan`` instead.  Check the *output* if you care.
+* On TPU (and GPU with TF32) the default matmul precision is reduced; pass
+  ``precision=jax.lax.Precision.HIGHEST`` for genuinely float32 results.
 """
+
+from __future__ import annotations
+
+from typing import Optional, Tuple, Union
 
 import jax
 import jax.numpy as jnp
-from typing import Optional, Tuple, Union, List
-import warnings
+from jax import lax
+
+Array = jax.Array
 
 
-def safe_matmul(a: jnp.ndarray, 
-               b: jnp.ndarray,
-               precision: Optional[jax.lax.Precision] = None,
-               check_shapes: bool = True) -> jnp.ndarray:
-    """Safe matrix multiplication with shape checking.
-    
-    Args:
-        a: Left matrix
-        b: Right matrix  
-        precision: Numerical precision (DEFAULT, HIGH, HIGHEST)
-        check_shapes: Whether to validate shapes
-        
-    Returns:
-        Matrix product a @ b
-    """
+def safe_matmul(a: Array, b: Array, precision: Optional[lax.Precision] = None,
+                check_shapes: bool = True) -> Array:
+    """``a @ b`` with eager shape validation and an explicit precision setting."""
     if check_shapes:
         if a.ndim < 2 or b.ndim < 2:
-            raise ValueError(f"Inputs must be at least 2D: {a.shape}, {b.shape}")
+            raise ValueError(f"Inputs must be at least 2-D: {a.shape}, {b.shape}")
         if a.shape[-1] != b.shape[-2]:
             raise ValueError(f"Inner dimensions must match: {a.shape}, {b.shape}")
-    
     return jnp.matmul(a, b, precision=precision)
 
 
-def batched_matmul(a: jnp.ndarray, b: jnp.ndarray) -> jnp.ndarray:
-    """Efficient batched matrix multiplication.
-    
-    Args:
-        a: Batched matrices (..., m, k)
-        b: Batched matrices (..., k, n)
-        
-    Returns:
-        Batched products (..., m, n)
-    """
+def batched_matmul(a: Array, b: Array) -> Array:
+    """``(..., m, k) @ (..., k, n)`` over a leading batch axis via ``vmap``."""
     return jax.vmap(jnp.matmul)(a, b)
 
 
-def einsum_path_optimize(subscripts: str, *operands, optimize: str = 'optimal') -> jnp.ndarray:
-    """Einstein summation with path optimization.
-    
-    Args:
-        subscripts: Einstein summation subscripts
-        *operands: Input arrays
-        optimize: Optimization strategy
-        
-    Returns:
-        Einsum result with optimized contraction path
-    """
+def einsum_path_optimize(subscripts: str, *operands: Array, optimize: str = "optimal") -> Array:
+    """``jnp.einsum`` with contraction-path optimisation enabled."""
     return jnp.einsum(subscripts, *operands, optimize=optimize)
 
 
-def stable_svd(matrix: jnp.ndarray, 
-              full_matrices: bool = True,
-              compute_uv: bool = True,
-              hermitian: bool = False) -> Union[jnp.ndarray, Tuple[jnp.ndarray, ...]]:
-    """Numerically stable SVD computation.
-    
-    Args:
-        matrix: Input matrix
-        full_matrices: Whether to compute full U and Vt matrices
-        compute_uv: Whether to compute U and Vt
-        hermitian: Whether matrix is Hermitian
-        
-    Returns:
-        SVD components (U, s, Vt) or just s
-    """
-    try:
-        if compute_uv:
-            u, s, vt = jnp.linalg.svd(matrix, full_matrices=full_matrices, hermitian=hermitian)
-            # Ensure singular values are non-negative and sorted
-            s = jnp.maximum(s, 0.0)
-            return u, s, vt
-        else:
-            s = jnp.linalg.svd(matrix, compute_uv=False, hermitian=hermitian)
-            s = jnp.maximum(s, 0.0)
-            return s
-    except jnp.linalg.LinAlgError as e:
-        warnings.warn(f"SVD failed, using pseudoinverse fallback: {e}")
-        # Fallback to eigendecomposition for square matrices
-        if matrix.shape[-1] == matrix.shape[-2]:
-            return stable_eigh(matrix @ matrix.T)
-        else:
-            raise e
+# ---------------------------------------------------------------------------
+# Decompositions
+# ---------------------------------------------------------------------------
+
+def stable_svd(matrix: Array, full_matrices: bool = True, compute_uv: bool = True,
+               hermitian: bool = False) -> Union[Array, Tuple[Array, Array, Array]]:
+    """SVD with singular values clamped to be non-negative (round-off can give -1e-8)."""
+    if compute_uv:
+        u, s, vt = jnp.linalg.svd(matrix, full_matrices=full_matrices, hermitian=hermitian)
+        return u, jnp.maximum(s, 0.0), vt
+    return jnp.maximum(jnp.linalg.svd(matrix, compute_uv=False, hermitian=hermitian), 0.0)
 
 
-def stable_eigh(matrix: jnp.ndarray, 
-               UPLO: str = 'L',
-               symmetrize_input: bool = True) -> Tuple[jnp.ndarray, jnp.ndarray]:
-    """Stable eigendecomposition for Hermitian matrices.
-    
-    Args:
-        matrix: Hermitian matrix
-        UPLO: Whether to use upper ('U') or lower ('L') triangle
-        symmetrize_input: Whether to symmetrize input matrix
-        
-    Returns:
-        (eigenvalues, eigenvectors) tuple
+def stable_eigh(matrix: Array, UPLO: str = "L", symmetrize_input: bool = True
+                ) -> Tuple[Array, Array]:
+    """Eigendecomposition of a Hermitian matrix, eigenvalues in ascending order.
+
+    ``eigh`` only reads one triangle, so a slightly asymmetric input (from
+    ``A @ A.T`` in float32, say) silently produces the decomposition of a
+    *different* matrix.  Symmetrising first removes that ambiguity.
     """
     if symmetrize_input:
-        # Ensure exact Hermitian symmetry
-        matrix = (matrix + matrix.T.conj()) / 2
-    
-    try:
-        eigenvals, eigenvecs = jnp.linalg.eigh(matrix, UPLO=UPLO)
-        # Sort eigenvalues and eigenvectors in descending order
-        idx = jnp.argsort(eigenvals)[::-1]
-        eigenvals = eigenvals[idx]
-        eigenvecs = eigenvecs[:, idx]
-        return eigenvals, eigenvecs
-    except jnp.linalg.LinAlgError as e:
-        warnings.warn(f"Eigendecomposition failed: {e}")
-        raise e
+        matrix = (matrix + jnp.swapaxes(matrix, -1, -2).conj()) / 2
+    return jnp.linalg.eigh(matrix, UPLO=UPLO)
 
 
-def qr_decomposition(matrix: jnp.ndarray,
-                    mode: str = 'reduced',
-                    pivoting: bool = False) -> Tuple[jnp.ndarray, jnp.ndarray]:
-    """QR decomposition with optional pivoting.
-    
-    Args:
-        matrix: Input matrix
-        mode: 'reduced', 'complete', or 'r'
-        pivoting: Whether to use column pivoting
-        
-    Returns:
-        QR decomposition components
+def qr_decomposition(matrix: Array, mode: str = "reduced") -> Union[Array, Tuple[Array, Array]]:
+    """Householder QR; ``mode`` in ``{'reduced', 'complete', 'r'}``."""
+    return jnp.linalg.qr(matrix, mode=mode)
+
+
+def cholesky_safe(matrix: Array, regularization: float = 1e-8) -> Array:
+    """Cholesky of ``matrix + regularization * I``.
+
+    The jitter makes a positive *semi*-definite matrix (a Gram matrix, a
+    covariance with a zero-variance direction) strictly positive definite.
+    Note that inside ``jit`` a failed factorisation yields ``nan``, not an
+    exception.
     """
-    if pivoting:
-        # JAX doesn't have built-in pivoting, use standard QR
-        warnings.warn("Pivoting not supported, using standard QR")
-    
-    if mode == 'r':
-        return jnp.linalg.qr(matrix, mode='r')
-    else:
-        q, r = jnp.linalg.qr(matrix, mode=mode)
-        return q, r
+    n = matrix.shape[-1]
+    return jnp.linalg.cholesky(matrix + regularization * jnp.eye(n, dtype=matrix.dtype))
 
 
-def cholesky_safe(matrix: jnp.ndarray, 
-                 regularization: float = 1e-8) -> jnp.ndarray:
-    """Safe Cholesky decomposition with regularization.
-    
-    Args:
-        matrix: Positive definite matrix
-        regularization: Diagonal regularization to ensure positive definiteness
-        
-    Returns:
-        Lower triangular Cholesky factor
-    """
-    # Add regularization to diagonal
-    regularized = matrix + regularization * jnp.eye(matrix.shape[-1])
-    
-    try:
-        return jnp.linalg.cholesky(regularized)
-    except jnp.linalg.LinAlgError:
-        # Try with larger regularization
-        regularized = matrix + 1e-6 * jnp.eye(matrix.shape[-1])
-        return jnp.linalg.cholesky(regularized)
-
-
-def matrix_power(matrix: jnp.ndarray, power: int) -> jnp.ndarray:
-    """Compute integer powers of matrices efficiently.
-    
-    Args:
-        matrix: Square matrix
-        power: Integer power
-        
-    Returns:
-        Matrix raised to the given power
-    """
-    if power == 0:
-        return jnp.eye(matrix.shape[-1], dtype=matrix.dtype)
-    elif power == 1:
-        return matrix
-    elif power < 0:
+def matrix_power(matrix: Array, power: int) -> Array:
+    """Integer matrix power by binary exponentiation (negative powers invert first)."""
+    if power < 0:
         return matrix_power(jnp.linalg.inv(matrix), -power)
-    else:
-        # Use binary exponentiation
-        result = jnp.eye(matrix.shape[-1], dtype=matrix.dtype)
-        base = matrix
-        
-        while power > 0:
-            if power % 2 == 1:
-                result = result @ base
-            base = base @ base
-            power //= 2
-        
-        return result
+    result = jnp.eye(matrix.shape[-1], dtype=matrix.dtype)
+    base = matrix
+    while power > 0:
+        if power & 1:
+            result = result @ base
+        base = base @ base
+        power >>= 1
+    return result
 
 
-def trace_product(a: jnp.ndarray, b: jnp.ndarray) -> jnp.ndarray:
-    """Compute trace(A @ B) efficiently without forming the product.
-    
-    Args:
-        a: First matrix
-        b: Second matrix
-        
-    Returns:
-        Trace of the matrix product
+def matrix_sqrt(matrix: Array, hermitian: bool = True) -> Array:
+    """Principal square root via eigendecomposition (Hermitian PSD) or SVD."""
+    if hermitian:
+        w, v = stable_eigh(matrix)
+        return (v * jnp.sqrt(jnp.maximum(w, 0.0))) @ v.T
+    u, s, vt = stable_svd(matrix)
+    return (u * jnp.sqrt(s)) @ vt
+
+
+def matrix_logarithm(matrix: Array) -> Array:
+    """Matrix logarithm of a Hermitian positive-definite matrix."""
+    w, v = stable_eigh(matrix)
+    log_w = jnp.log(jnp.maximum(w, jnp.finfo(w.dtype).tiny))
+    return (v * log_w) @ v.T
+
+
+def pseudoinverse_stable(matrix: Array, rcond: Optional[float] = None,
+                         hermitian: bool = False) -> Array:
+    """Moore-Penrose pseudoinverse with an explicit singular-value cutoff."""
+    if rcond is None:
+        rcond = max(matrix.shape[-2:]) * float(jnp.finfo(matrix.dtype).eps)
+    u, s, vt = stable_svd(matrix, full_matrices=False, hermitian=hermitian)
+    cutoff = rcond * jnp.max(s)
+    s_inv = jnp.where(s > cutoff, 1.0 / jnp.where(s > cutoff, s, 1.0), 0.0)
+    return (vt.T * s_inv) @ u.T
+
+
+def gram_schmidt(vectors: Array, normalize: bool = True) -> Array:
+    """Modified Gram-Schmidt on the columns of ``vectors``.
+
+    *Modified* GS subtracts each projection from the running vector (rather
+    than from the original), which is far more stable than classical GS.  It
+    is O(n^2 m) sequential work - for anything beyond teaching, use
+    ``jnp.linalg.qr``.
     """
-    return jnp.sum(a * b.T)
+    m, n = vectors.shape
+
+    def outer(i, Q):
+        v = vectors[:, i]
+
+        def inner(j, v):
+            qj = Q[:, j]
+            return v - jnp.where(j < i, jnp.dot(qj, v), 0.0) * qj
+
+        v = lax.fori_loop(0, n, inner, v)
+        if normalize:
+            v = v / jnp.maximum(jnp.linalg.norm(v), jnp.finfo(v.dtype).tiny)
+        return Q.at[:, i].set(v)
+
+    return lax.fori_loop(0, n, outer, jnp.zeros_like(vectors))
 
 
-def frobenius_norm(matrix: jnp.ndarray, axis: Optional[Tuple[int, int]] = None) -> jnp.ndarray:
-    """Compute Frobenius norm of matrices.
-    
-    Args:
-        matrix: Input matrix or batch of matrices
-        axis: Axes over which to compute norm (default: last two)
-        
-    Returns:
-        Frobenius norm(s)
-    """
+# ---------------------------------------------------------------------------
+# Norms and conditioning
+# ---------------------------------------------------------------------------
+
+def trace_product(a: Array, b: Array) -> Array:
+    """``trace(a @ b)`` without forming the product: ``sum(a * b.T)``."""
+    return jnp.sum(a * jnp.swapaxes(b, -1, -2))
+
+
+def frobenius_norm(matrix: Array, axis: Optional[Tuple[int, int]] = None) -> Array:
+    """Frobenius norm over the last two axes (or the given pair)."""
     if axis is None:
         axis = (-2, -1)
-    
     return jnp.sqrt(jnp.sum(jnp.abs(matrix) ** 2, axis=axis))
 
 
-def spectral_norm(matrix: jnp.ndarray, max_iterations: int = 50) -> jnp.ndarray:
-    """Compute spectral norm (largest singular value) via power iteration.
-    
-    Args:
-        matrix: Input matrix
-        max_iterations: Maximum power iterations
-        
-    Returns:
-        Spectral norm
+def spectral_norm(matrix: Array, max_iterations: int = 50, v0: Optional[Array] = None) -> Array:
+    """Largest singular value by power iteration on ``A^T A``.
+
+    Each iteration multiplies by ``A`` and ``A^T``; the estimate converges as
+    ``(sigma_2 / sigma_1) ** (2k)``.  This is the estimator used for spectral
+    normalisation in GANs, where a single iteration per training step suffices
+    because the weights change slowly.
     """
-    # Power iteration to find largest singular value
-    m, n = matrix.shape[-2:]
-    
-    # Start with random vector
-    v = jnp.ones(n, dtype=matrix.dtype)
+    _, n = matrix.shape[-2:]
+    v = jnp.ones(n, dtype=matrix.dtype) if v0 is None else v0
     v = v / jnp.linalg.norm(v)
-    
-    for _ in range(max_iterations):
+
+    def body(_, carry):
+        v, _ = carry
         u = matrix @ v
-        u = u / jnp.linalg.norm(u)
-        
-        v = matrix.T @ u
-        sigma = jnp.linalg.norm(v)
-        v = v / sigma
-    
+        u = u / jnp.maximum(jnp.linalg.norm(u), jnp.finfo(u.dtype).tiny)
+        w = matrix.T @ u
+        sigma = jnp.linalg.norm(w)
+        return w / jnp.maximum(sigma, jnp.finfo(w.dtype).tiny), sigma
+
+    _, sigma = lax.fori_loop(0, max_iterations, body, (v, jnp.asarray(0.0, matrix.dtype)))
     return sigma
 
 
-def condition_number(matrix: jnp.ndarray, 
-                    p: Optional[Union[None, int, str]] = None) -> jnp.ndarray:
-    """Compute condition number of matrix.
-    
-    Args:
-        matrix: Input matrix
-        p: Norm type (None, 1, -1, 2, -2, 'fro')
-        
-    Returns:
-        Condition number
-    """
+def condition_number(matrix: Array, p: Optional[Union[int, str]] = None) -> Array:
+    """``kappa_p(A) = ||A||_p ||A^{-1}||_p`` (2-norm by default, via the SVD)."""
     return jnp.linalg.cond(matrix, p=p)
-
-
-def pseudoinverse_stable(matrix: jnp.ndarray, 
-                        rcond: Optional[float] = None,
-                        hermitian: bool = False) -> jnp.ndarray:
-    """Stable computation of Moore-Penrose pseudoinverse.
-    
-    Args:
-        matrix: Input matrix
-        rcond: Cutoff for small singular values
-        hermitian: Whether matrix is Hermitian
-        
-    Returns:
-        Pseudoinverse matrix
-    """
-    if rcond is None:
-        rcond = max(matrix.shape[-2:]) * jnp.finfo(matrix.dtype).eps
-    
-    try:
-        u, s, vt = stable_svd(matrix, full_matrices=False, hermitian=hermitian)
-        
-        # Cutoff small singular values
-        cutoff = rcond * jnp.max(s)
-        s_inv = jnp.where(s > cutoff, 1.0 / s, 0.0)
-        
-        return (vt.T * s_inv) @ u.T
-    
-    except Exception:
-        # Fallback to direct computation
-        return jnp.linalg.pinv(matrix, rcond=rcond, hermitian=hermitian)
-
-
-def matrix_sqrt(matrix: jnp.ndarray, 
-               hermitian: bool = True) -> jnp.ndarray:
-    """Compute matrix square root.
-    
-    Args:
-        matrix: Input matrix (should be positive definite if hermitian=True)
-        hermitian: Whether to use eigendecomposition (for Hermitian matrices)
-        
-    Returns:
-        Matrix square root
-    """
-    if hermitian:
-        eigenvals, eigenvecs = stable_eigh(matrix)
-        sqrt_eigenvals = jnp.sqrt(jnp.maximum(eigenvals, 0.0))
-        return (eigenvecs * sqrt_eigenvals) @ eigenvecs.T
-    else:
-        # Use SVD for general matrices
-        u, s, vt = stable_svd(matrix)
-        sqrt_s = jnp.sqrt(s)
-        return (u * sqrt_s) @ vt
-
-
-def matrix_logarithm(matrix: jnp.ndarray) -> jnp.ndarray:
-    """Compute matrix logarithm for positive definite matrices.
-    
-    Args:
-        matrix: Positive definite matrix
-        
-    Returns:
-        Matrix logarithm
-    """
-    eigenvals, eigenvecs = stable_eigh(matrix)
-    log_eigenvals = jnp.log(jnp.maximum(eigenvals, jnp.finfo(eigenvals.dtype).tiny))
-    return (eigenvecs * log_eigenvals) @ eigenvecs.T
-
-
-def gram_schmidt(vectors: jnp.ndarray, normalize: bool = True) -> jnp.ndarray:
-    """Gram-Schmidt orthogonalization.
-    
-    Args:
-        vectors: Matrix with vectors as columns
-        normalize: Whether to normalize the result
-        
-    Returns:
-        Orthogonalized vectors
-    """
-    m, n = vectors.shape
-    orthogonal = jnp.zeros_like(vectors)
-    
-    for i in range(n):
-        v = vectors[:, i]
-        
-        # Subtract projections onto previous vectors
-        for j in range(i):
-            proj = jnp.dot(v, orthogonal[:, j]) * orthogonal[:, j]
-            v = v - proj
-        
-        if normalize:
-            v = v / jnp.linalg.norm(v)
-        
-        orthogonal = orthogonal.at[:, i].set(v)
-    
-    return orthogonal
