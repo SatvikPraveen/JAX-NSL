@@ -61,7 +61,7 @@ notebooks:
 
 ## docs         Build HTML documentation with Sphinx
 docs:
-	sphinx-build -b html $(DOCS_DIR)/source $(DOCS_DIR)/_build/html
+	sphinx-build -b html -c $(DOCS_DIR) $(DOCS_DIR)/source $(DOCS_DIR)/_build/html
 
 ## docs-serve   Build and open docs in browser
 docs-serve: docs
